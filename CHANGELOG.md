@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-10-19
 
-- Add the GitHub-hosted sencha-plugins OMP marketplace and a source launcher for the published 0.1.1 adapter.
+- Discover all server-advertised ACP models without a Gemini-only whitelist, including grouped model selectors and legacy catalogs.
+- Read thinking options per model and preserve every advertised OMP-compatible effort, including off, minimal, xhigh and max.
+- Migrate existing cached catalogs on refresh; use conservative metadata and unconfigured cost placeholders for unknown models.
+
+- Add the GitHub-hosted sencha-plugins OMP marketplace and a source launcher for the published adapter.
 - Prepare production dependencies atomically on first load and reuse the cache offline afterward; npm install scripts and unnecessary Pi CLI peers are disabled.
 - Add marketplace provisioning regressions and an isolated end-to-end install/uninstall check.
 

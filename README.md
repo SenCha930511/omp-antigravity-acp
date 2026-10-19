@@ -19,14 +19,14 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.1 packages a working local adapter tested with macOS, OMP 18.12.2, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.2 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.2, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
 ## Features
 
-- `antigravity-acp/gemini-4-argon` and `antigravity-acp/gemini-3.8-flash`.
-- Server-confirmed Low, Medium and High thinking selection.
+- All server-advertised model IDs, without a Gemini-only whitelist. Claude, GPT-OSS or future models become available when the ACP endpoint advertises them for your account.
+- Per-model, server-confirmed thinking selection. OMP efforts `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max` are exposed only when advertised; models without these choices use the server default.
 - Compatible OMP tools exposed through an authenticated loopback MCP bridge.
 - Provider-specific instructions prefer OMP tools and require approval before substituting native Antigravity tools. These instructions are not a hard tool-disable mechanism.
 - Lazy ACP startup; model selection and cached listing do not launch the server.
@@ -54,7 +54,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.1** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.2** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -117,7 +117,9 @@ This repository does not change an existing OMP installation or overwrite its se
 
 First use or login may download the official runtime. The observed macOS runtime occupies about **383 MiB**; size varies by platform/version. It lives outside this repository under `~/.local/opt/agy-acp/`. Do not remove it while ACP processes are running.
 
-If OMP's `enabledModels` whitelist is configured, add the two provider/model IDs above. The adapter does not rewrite that whitelist or any model-role preset.
+If OMP's `enabledModels` whitelist is configured, add `antigravity-acp/*` alongside your existing entries in `~/.omp/agent/config.yml` to allow newly discovered models. Use individual `antigravity-acp/<server-model-id>` entries instead if you prefer a restricted list. The adapter does not rewrite that whitelist or any model-role preset.
+
+After upgrading from an older adapter, run `/antigravity-acp refresh` once to replace the old cached list with per-model selector choices. Startup and ordinary catalog listing remain offline, so new server models appear after an explicit refresh. Availability in the Antigravity app or CLI does not guarantee availability through ACP: on the tested account, ACP still advertised only `gemini-4-argon` and `gemini-3.8-flash` on 2026-10-19.
 
 ## Commands
 
@@ -145,19 +147,20 @@ Never include those user data directories, OAuth callback URLs, account identifi
 
 ## Limitations
 
-- The adapter advertises a conservative 1,000,000-token context and 65,536-token output metadata. These are not controls over Antigravity's internal context compaction.
+- Argon/Flash retain client metadata of 1,000,000 context tokens and 65,536 output tokens. Other models use conservative defaults of 32,768 context tokens and 8,192 output tokens because the model selector does not supply these limits. These are client metadata, not verified server limits or controls over Antigravity's internal compaction.
 - API background execution and long decode controls are not exposed.
 - The bridge advertises text and image input, not the full Gemini API media surface.
 - Thought summaries appear only if the ACP server emits them. A verified Argon High request returned no `agent_thought_chunk`; tool/plan progress can appear in OMP's thinking area.
 - Cached-token usage appears only when ACP reports it. Missing counts are not proof that backend caching was disabled.
 - The prompt inactivity watchdog is 10 minutes without progress, or 60 minutes while tools/permissions are outstanding.
 - Argon estimates use the undiscounted list price: $4 input, $20 output and $0.20 cached input per million tokens. Flash estimates use the announced date-dependent rates. These are snapshots, not live pricing discovery.
+- Other models have no configured API price yet. Their zero cost fields are placeholders for unavailable estimates and do not mean free usage.
 - Not every OMP tool schema is bridge-compatible. Inspect `tools` after a request.
 - Antigravity still manages its own native tools and checkpoint summaries.
 
 ## Development and verification
 
-`npm test` runs offline regression tests for session ownership, restart-after-shutdown, asynchronous teardown and price calculations. It performs no model inference and consumes no account quota.
+`npm test` runs offline regression tests for all-vendor catalogs, per-model thinking choices, selector routing, session ownership, restart-after-shutdown, asynchronous teardown and price calculations. It performs no model inference and consumes no account quota.
 
 `npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
 
@@ -172,6 +175,8 @@ AGY_ACP_BIN=/usr/bin/false omp models antigravity-acp --no-extensions -e ./exten
 With no local model cache, upstream's conservative fallback may list fewer models. Listing a model is not proof of account entitlement or successful inference.
 
 The original local implementation also passed live Argon/Flash inference, effort-selector and OMP tool round-trip checks. The planning lifecycle fix passed a live Argon Medium request, session shutdown and a subsequent request with conversation history. Those tests do not cover every platform or the complete interactive Refine plan UI.
+
+The generic catalog implementation passed a live refresh and Argon Low/High inference. Claude, GPT-OSS and future IDs are covered by offline catalog/selector fixtures; live inference for those models remains unverified until the ACP server advertises them.
 
 ## License and attribution
 

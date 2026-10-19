@@ -6,10 +6,11 @@ import path from "node:path";
 import fs from "node:fs";
 import { officialApiCost, applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
-import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, projectModels, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter } from "./runtime.mjs";
+import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model-catalog.ts";
+import { advertisedRecord, choices, selector } from "./selectors.ts";
+import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
-const requested = new Set(["gemini-4-argon", "gemini-3.8-flash"]);
 const TOOL_ROUTING = `
 OMP tool routing:
 The supplied OMP tools are exposed by the authenticated pi-bridge MCP server with pi_ prefixes.
@@ -108,20 +109,21 @@ export default async function (pi: any) {
   });
   const upstreamModels = new Map<string, any>();
   function catalog(models: any[]) {
-    return models.filter(model => requested.has(model.id)).map(source => {
+    return models.map(source => {
       const model = { ...source, cost: officialApiCost(source.id) ?? source.cost };
+      const efforts = EFFORTS.filter(effort => model.thinkingLevelMap?.[effort]);
+      if (efforts.length && !model.thinking) {
+        model.thinking = { mode: "effort", efforts, defaultLevel: efforts.includes("high") ? "high" : efforts[0] };
+      }
       upstreamModels.set(model.id, model);
-      const efforts = ["low", "medium", "high"].filter(effort => model.thinkingLevelMap?.[effort]);
-      return efforts.length ? { ...model, thinking: { mode: "effort", efforts, defaultLevel: "high" } } : model;
+      return model;
     });
   }
   function readCachedCatalog() {
     try {
       const cache = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-      if (cache.schemaVersion !== 1 || !Array.isArray(cache.models) || cache.models.length > 64) return [];
-      return cache.models.filter((model: any) =>
-        typeof model.modelId === "string" && typeof model.name === "string" &&
-        /^(gemini-4-argon|gemini-3\.8-flash)-(low|medium|high)$/.test(model.modelId));
+      if (![1, 2].includes(cache.schemaVersion)) return [];
+      return readModels(cache.models);
     } catch { return []; }
   }
   async function discoverModels() {
@@ -130,10 +132,19 @@ export default async function (pi: any) {
     try {
       await connection.initialize();
       const session = await connection.newSession(process.cwd());
-      // 1.4.x also advertises legacy effort-qualified IDs. Use those exact
-      // advertised IDs for the upstream effort map; never synthesize tiers.
-      const models = session.models?.availableModels;
-      if (!models?.length) throw new Error("Antigravity did not advertise effort-qualified models");
+      const modern = choices(selector(session, "model"));
+      if (modern.length) {
+        const models = [];
+        for (const option of modern) {
+          // Model changes can alter reasoning choices; inspect each model's
+          // confirmed configuration rather than sharing one global tier list.
+          await connection.setModel(session.sessionId, option.value);
+          models.push(advertisedRecord(connection.getSessionState(session.sessionId), option.value, option.name));
+        }
+        return models;
+      }
+      const models = readModels(session.models?.availableModels);
+      if (!models.length) throw new Error("Antigravity did not advertise any models");
       return models;
     } finally {
       await connection.close();
@@ -141,8 +152,9 @@ export default async function (pi: any) {
   }
   async function refreshCatalog() {
     const models = await discoverModels();
-    const registered = catalog(projectModels(models));
-    const cache = { schemaVersion: 1, discoveredAt: new Date().toISOString(), models };
+    upstreamModels.clear();
+    const registered = catalog(projectCatalog(models));
+    const cache = { schemaVersion: 2, discoveredAt: new Date().toISOString(), models };
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const temporary = `${cachePath}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, { mode: 0o600 });
@@ -150,7 +162,7 @@ export default async function (pi: any) {
     return registered;
   }
   const cached = readCachedCatalog();
-  let initialModels = catalog(cached.length ? projectModels(cached) : runtimes.get().provider.getModels());
+  let initialModels = catalog(cached.length ? projectCatalog(cached) : runtimes.get().provider.getModels());
 
   const adapted = new Proxy(pi, {
     get(target, key) {
@@ -168,7 +180,7 @@ export default async function (pi: any) {
           // OMP may call this during startup, even for another provider.
           // Network discovery is reserved for explicit refresh or first ACP use.
           const cached = readCachedCatalog();
-          return catalog(cached.length ? projectModels(cached) : runtimes.get().provider.getModels());
+          return catalog(cached.length ? projectCatalog(cached) : runtimes.get().provider.getModels());
         },
         streamSimple(model: any, context: any, options: any) {
           const tools = context.tools ?? [];
@@ -196,7 +208,7 @@ export default async function (pi: any) {
               const original = upstreamModels.get(model.id);
               if (!original) throw new Error(`Antigravity model was not discovered: ${model.id}. Run /antigravity-acp refresh.`);
               const { runtime, provider } = runtimes.get(options?.sessionId);
-              const stream = provider.streamSimple(original, routedContext, options);
+              const stream = provider.streamSimple(selectRuntimeModel(original, options?.reasoning), routedContext, options);
               for await (const event of stream) {
                 const message = event.message ?? event.partial;
                 if (message?.usage) applyApiCostEstimate(model.id, message.usage, message.timestamp ?? Date.now());
