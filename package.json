@@ -1,0 +1,43 @@
+{
+  "name": "omp-antigravity-acp",
+  "version": "0.1.0",
+  "description": "Google Antigravity ACP adapter for Oh My Pi (OMP)",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extension/",
+    "scripts/build.mjs",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension/index.ts"
+    ]
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs",
+    "check": "npm run build && npm test",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.3.0",
+    "pi-antigravity-acp-provider": "0.1.15",
+    "typebox": "1.3.36"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "antigravity",
+    "acp",
+    "gemini"
+  ]
+}

@@ -1,0 +1,71 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { SessionRuntimePool } from "../extension/runtime-pool.ts";
+
+function fixture() {
+  let created = 0;
+  const disposed: number[] = [];
+  const pool = new SessionRuntimePool(
+    () => ({ id: ++created }),
+    async entry => { disposed.push(entry.id); },
+  );
+  return { pool, disposed, count: () => created };
+}
+
+test("construction and inspection are lazy", () => {
+  const { pool, count } = fixture();
+  assert.deepEqual(pool.values(), []);
+  assert.equal(count(), 0);
+});
+
+test("planning shutdown leaves the main runtime usable", async () => {
+  const { pool, disposed } = fixture();
+  const main = pool.get("main");
+  const plan = pool.get("plan");
+  await pool.close("plan");
+  assert.equal(pool.get("main"), main);
+  assert.deepEqual(disposed, [plan.id]);
+  assert.notEqual(pool.get("plan"), plan);
+});
+
+test("refining a disposed session creates a fresh runtime", async () => {
+  const { pool, disposed } = fixture();
+  const first = pool.get("session");
+  await pool.close("session");
+  const next = pool.get("session");
+  assert.notEqual(next, first);
+  await pool.closeAll();
+  assert.deepEqual(disposed, [first.id, next.id]);
+});
+
+test("detach happens before asynchronous teardown completes", async () => {
+  let release!: () => void;
+  let serial = 0;
+  const pool = new SessionRuntimePool(
+    () => ({ id: ++serial }),
+    () => new Promise<void>(resolve => { release = resolve; }),
+  );
+  const previous = pool.get("same");
+  const closing = pool.close("same");
+  assert.notEqual(pool.get("same"), previous);
+  release();
+  await closing;
+});
+
+test("repeated close never creates or disposes extra resources", async () => {
+  const { pool, disposed, count } = fixture();
+  pool.get("session");
+  await pool.close("session");
+  await pool.close("session");
+  await pool.closeAll();
+  assert.equal(count(), 1);
+  assert.deepEqual(disposed, [1]);
+});
+
+test("global shutdown clears all ownership even when disposal rejects", async () => {
+  const pool = new SessionRuntimePool(() => ({}), async () => { throw Error("shutdown"); });
+  pool.get("main");
+  pool.get("plan");
+  await pool.closeAll();
+  assert.deepEqual(pool.values(), []);
+});

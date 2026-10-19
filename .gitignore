@@ -1,0 +1,9 @@
+node_modules/
+extension/runtime.mjs
+*.tgz
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+coverage/
