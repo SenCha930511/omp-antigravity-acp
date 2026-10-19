@@ -4,7 +4,7 @@ omp-antigravity-acp is an OMP-focused derivative fork/adaptation of [pi-antigrav
 
 The upstream authors retain credit for the original ACP transport, authentication, runtime installation, session restoration and MCP bridge implementation.
 
-Its original license notice follows. The adapter adds OMP-specific registration, model selectors, lifecycle handling, tool-routing instructions and cost estimation. The generated bundle also contains npm dependencies; retain their applicable licenses when redistributing a bundle. Google runtime executables are not included.
+Its original license notice follows. The adapter adds OMP-specific registration, model selectors, lifecycle handling, tool-routing instructions and cost estimation. Published npm packages include the generated `THIRD_PARTY_LICENSES.txt` with license notices for bundled dependencies. Google runtime executables are not included.
 
 ```
 MIT License

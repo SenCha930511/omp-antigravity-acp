@@ -1,5 +1,6 @@
 node_modules/
 extension/runtime.mjs
+THIRD_PARTY_LICENSES.txt
 *.tgz
 *.log
 .DS_Store

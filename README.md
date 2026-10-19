@@ -16,7 +16,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.0 is extracted from a working local adapter tested with macOS, OMP 18.12.2, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.1 packages a working local adapter tested with macOS, OMP 18.12.2, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -31,7 +31,19 @@ Google's consumer-plan policies can restrict third-party agent access even throu
 - OAuth credentials owned by Antigravity; OMP stores only a non-secret marker.
 - API-equivalent cost estimates, not subscription billing or quota measurements.
 
-## Requirements and build
+## Install from npm
+
+Use Node.js 22.19 or newer and OMP:
+
+```sh
+omp plugin install npm:omp-antigravity-acp
+```
+
+Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
+
+The upstream dependency declares Pi-specific peers, so package managers that automatically install peers may also fetch the Pi CLI. The OMP adapter does not invoke that CLI. This does not apply to source installs using this repository's `.npmrc`.
+
+## Build from source
 
 Use Node.js 22.19 or newer and OMP. Node.js is also required by the upstream process supervisor.
 
@@ -42,7 +54,7 @@ npm run check
 
 The checked-in npm configuration disables automatic peer installation because the upstream package declares Pi-specific peers. This adapter explicitly supplies its runtime dependency on `pi-ai`; it does not need the Pi coding-agent CLI.
 
-The build produces `extension/runtime.mjs`. It is ignored by Git and rebuilt locally. Supervisor and runtime catalog paths resolve against the installed upstream dependency, so the bundle does not embed the developer's home directory.
+The build produces `extension/runtime.mjs` and `THIRD_PARTY_LICENSES.txt`. They are ignored by Git, rebuilt locally and included in published npm tarballs. Supervisor and runtime catalog paths resolve against the installed upstream dependency, so the bundle does not embed the developer's home directory.
 
 For a temporary session, from this repository:
 
@@ -104,6 +116,8 @@ Never include those user data directories, OAuth callback URLs, account identifi
 ## Development and verification
 
 `npm test` runs offline regression tests for session ownership, restart-after-shutdown, asynchronous teardown and price calculations. It performs no model inference and consumes no account quota.
+
+`npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
 
 Before publishing, verify local OMP loading without allowing ACP to start:
 
