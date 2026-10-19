@@ -1,5 +1,8 @@
 # omp-antigravity-acp
 
+[![npm version](https://img.shields.io/npm/v/omp-antigravity-acp.svg)](https://www.npmjs.com/package/omp-antigravity-acp)
+[![npm downloads](https://img.shields.io/npm/dm/omp-antigravity-acp.svg)](https://www.npmjs.com/package/omp-antigravity-acp)
+
 Google Antigravity's official ACP server, adapted for **Oh My Pi (OMP)**.
 
 **An OMP-focused derivative fork of [zacbemis/pi-antigravity-acp-provider](https://github.com/zacbemis/pi-antigravity-acp-provider).** Original project by [zacbemis](https://github.com/zacbemis) and contributors, licensed under MIT.
@@ -33,10 +36,16 @@ Google's consumer-plan policies can restrict third-party agent access even throu
 
 ## Install from npm
 
-Use Node.js 22.19 or newer and OMP:
+The prebuilt package is published on [npm as `omp-antigravity-acp`](https://www.npmjs.com/package/omp-antigravity-acp). Use Node.js 22.19 or newer and OMP to install the latest release:
 
 ```sh
 omp plugin install npm:omp-antigravity-acp
+```
+
+To install the first public npm release explicitly:
+
+```sh
+omp plugin install npm:omp-antigravity-acp@0.1.1
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
