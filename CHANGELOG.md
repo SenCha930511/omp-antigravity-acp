@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 — 2026-10-20
+
+- Add npm ecosystem/resource keywords used by zmarketplace to discover OMP extensions.
+- Clarify the package description and document zmarketplace search and OMP installation.
+- Keep adapter runtime behavior unchanged from 0.1.2.
+
 ## 0.1.2 — 2026-10-19
 
 - Discover all server-advertised ACP models without a Gemini-only whitelist, including grouped model selectors and legacy catalogs.
