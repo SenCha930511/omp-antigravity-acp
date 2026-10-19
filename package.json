@@ -1,7 +1,7 @@
 {
   "name": "omp-antigravity-acp",
   "version": "0.1.0",
-  "description": "Google Antigravity ACP adapter for Oh My Pi (OMP)",
+  "description": "OMP-focused derivative fork of zacbemis/pi-antigravity-acp-provider",
   "type": "module",
   "license": "MIT",
   "engines": {

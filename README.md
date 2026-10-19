@@ -2,7 +2,17 @@
 
 Google Antigravity's official ACP server, adapted for **Oh My Pi (OMP)**.
 
-This is an independent compatibility adapter around [pi-antigravity-acp-provider](https://github.com/zacbemis/pi-antigravity-acp-provider), not an official Google or OMP integration. It uses ACP over stdio. The local HTTP MCP bridge carries tool calls; it is not a model API reverse proxy.
+**An OMP-focused derivative fork of [zacbemis/pi-antigravity-acp-provider](https://github.com/zacbemis/pi-antigravity-acp-provider).** Original project by [zacbemis](https://github.com/zacbemis) and contributors, licensed under MIT.
+
+This is an independent adaptation, not an official Google or OMP integration. It uses ACP over stdio. The local HTTP MCP bridge carries tool calls; it is not a model API reverse proxy.
+
+## Upstream and fork scope
+
+The original project's ACP transport, Google-managed authentication, runtime installation, session restoration and MCP tool bridge form the foundation of this project. Credit for those capabilities belongs to the upstream authors.
+
+This derivative adds OMP-specific provider registration, confirmed model/thinking selectors, lazy catalog loading, OMP-first tool instructions, API-equivalent pricing and per-session runtime lifecycle fixes for planning/refinement.
+
+The repository keeps the OMP adapter sources separately and installs upstream version **0.1.15** as an unmodified, pinned npm dependency. It does not contain a copy of upstream's Git history. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the original copyright and license notice.
 
 ## Status
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Make the derivative fork relationship, upstream authorship and OMP-specific modification scope explicit in the README, package metadata and third-party notices.
+
 ## 0.1.0 — 2026-10-19
 
 - Extract the locally verified OMP adapter into a portable source project.

@@ -1,7 +1,8 @@
 # Third-party notices
 
-This adapter uses pi-antigravity-acp-provider 0.1.15 by zacbemis and contributors, distributed under MIT:
-https://github.com/zacbemis/pi-antigravity-acp-provider
+omp-antigravity-acp is an OMP-focused derivative fork/adaptation of [pi-antigravity-acp-provider](https://github.com/zacbemis/pi-antigravity-acp-provider), originally created by [zacbemis](https://github.com/zacbemis) and contributors and distributed under MIT. It uses upstream version 0.1.15 as an unmodified npm dependency.
+
+The upstream authors retain credit for the original ACP transport, authentication, runtime installation, session restoration and MCP bridge implementation.
 
 Its original license notice follows. The adapter adds OMP-specific registration, model selectors, lifecycle handling, tool-routing instructions and cost estimation. The generated bundle also contains npm dependencies; retain their applicable licenses when redistributing a bundle. Google runtime executables are not included.
 
