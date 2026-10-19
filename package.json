@@ -37,6 +37,7 @@
     "build": "node scripts/build.mjs",
     "test": "node scripts/test.mjs",
     "test:packed": "node scripts/test-packed.mjs",
+    "test:marketplace": "node scripts/test-marketplace.mjs",
     "check": "npm run build && npm test",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"

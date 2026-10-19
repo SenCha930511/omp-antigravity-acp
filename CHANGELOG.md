@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add the GitHub-hosted sencha-plugins OMP marketplace and a source launcher for the published 0.1.1 adapter.
+- Prepare production dependencies atomically on first load and reuse the cache offline afterward; npm install scripts and unnecessary Pi CLI peers are disabled.
+- Add marketplace provisioning regressions and an isolated end-to-end install/uninstall check.
+
 ## 0.1.1 — 2026-10-19
 
 - Make the derivative fork relationship, upstream authorship and OMP-specific modification scope explicit in the README, package metadata and third-party notices.

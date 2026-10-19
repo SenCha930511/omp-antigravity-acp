@@ -1,4 +1,5 @@
 node_modules/
+.runtime/
 extension/runtime.mjs
 THIRD_PARTY_LICENSES.txt
 *.tgz

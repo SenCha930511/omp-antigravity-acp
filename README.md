@@ -34,7 +34,40 @@ Google's consumer-plan policies can restrict third-party agent access even throu
 - OAuth credentials owned by Antigravity; OMP stores only a non-secret marker.
 - API-equivalent cost estimates, not subscription billing or quota measurements.
 
-## Install from npm
+## Install from the OMP marketplace
+
+No server is needed: this GitHub repository is also an OMP marketplace named **sencha-plugins**.
+
+Add the source once, then install the plugin:
+
+```sh
+omp plugin marketplace add SenCha930511/omp-antigravity-acp
+omp plugin install omp-antigravity-acp@sencha-plugins
+```
+
+Or, inside OMP:
+
+```text
+/marketplace add SenCha930511/omp-antigravity-acp
+/marketplace
+```
+
+Select **omp-antigravity-acp** in the browser, install it, and restart OMP to load the provider.
+
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.1** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+
+The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
+
+Use either marketplace installation or direct npm installation for this provider. Disable/remove an existing installation before switching to avoid duplicate provider registration. Adding this source makes it available to users who add **sencha-plugins**; it does not submit the package to a central curated store.
+
+To refresh the catalog and upgrade an existing marketplace installation:
+
+```sh
+omp plugin marketplace update sencha-plugins
+omp plugin upgrade omp-antigravity-acp@sencha-plugins
+```
+
+## Install directly from npm
 
 The prebuilt package is published on [npm as `omp-antigravity-acp`](https://www.npmjs.com/package/omp-antigravity-acp). Use Node.js 22.19 or newer and OMP to install the latest release:
 
@@ -127,6 +160,8 @@ Never include those user data directories, OAuth callback URLs, account identifi
 `npm test` runs offline regression tests for session ownership, restart-after-shutdown, asynchronous teardown and price calculations. It performs no model inference and consumes no account quota.
 
 `npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
+
+`npm run test:marketplace` exercises catalog discovery, installation, automatic provider loading, offline cache reuse and uninstallation in a temporary named OMP profile. It downloads the published adapter and cleans the entire test profile afterward. Add `-- --remote` after publishing catalog changes to test the GitHub source instead of the local working tree. No model inference is performed.
 
 Before publishing, verify local OMP loading without allowing ACP to start:
 

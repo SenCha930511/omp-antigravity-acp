@@ -1,0 +1,19 @@
+{
+  "name": "sencha-plugins",
+  "owner": { "name": "SenCha930511" },
+  "metadata": {
+    "description": "OMP plugins maintained by SenCha930511",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "omp-antigravity-acp",
+      "description": "Google Antigravity ACP provider for OMP, derived from zacbemis/pi-antigravity-acp-provider",
+      "source": "./marketplace/antigravity-acp",
+      "version": "0.1.1",
+      "category": "development",
+      "author": { "name": "SenCha930511" },
+      "homepage": "https://github.com/SenCha930511/omp-antigravity-acp"
+    }
+  ]
+}
