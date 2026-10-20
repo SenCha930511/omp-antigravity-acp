@@ -1,23 +1,24 @@
 // Adapter-owned context transfer. The pinned upstream dependency stays intact.
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai/utils/transcript";
+import { estimateTransferTokens, resolveContextOptions, type ContextOptions } from "./context-settings.ts";
 export function currentSystemInstructions(context: any): string {
   const prompt = getCurrentSystemPrompt(context.messages) || context.systemPrompt || "";
-  if (Buffer.byteLength(prompt, "utf8") > 262_144) throw new Error("OMP system instructions exceed 262144 bytes; reduce them rather than truncating instructions");
+  if (Buffer.byteLength(prompt, "utf8") > 134_217_728) throw new Error("OMP system instructions exceed the 128 MiB hard transfer ceiling; reduce them rather than truncating instructions");
   return prompt;
 }
 
-export function historyBudget(contextWindow = 32_768, env = process.env): number {
-  const configured = Number(env.OMP_ACP_HISTORY_BYTES ?? 524_288);
-  if (!Number.isSafeInteger(configured) || configured < 16_384 || configured > 8_388_608) {
-    throw new Error("OMP_ACP_HISTORY_BYTES must be an integer between 16384 and 8388608");
+export function historyBudget(_contextWindow = 32_768, env = process.env, configured = 16_777_216): number {
+  const bytes = Number(env.OMP_ACP_HISTORY_BYTES ?? configured);
+  if (!Number.isSafeInteger(bytes) || bytes < 65_536 || bytes > 134_217_728) {
+    throw new Error("OMP_ACP_HISTORY_BYTES must be an integer between 65536 and 134217728");
   }
-  // A byte budget is deliberately conservative; this is not a tokenizer.
-  const modelBudget = Number.isFinite(contextWindow) && contextWindow > 0 ? Math.floor(contextWindow / 2) : 16_384;
-  return Math.min(configured, Math.max(4096, modelBudget));
+  return bytes;
 }
 
 export function buildPromptParts(context: any, fresh: boolean, unseenStart?: number,
-  limits: { contextWindow?: number } = {}) {
+  limits: { contextWindow?: number; maxTokens?: number; policy?: ContextOptions } = {}) {
+  const options = resolveContextOptions({ id: "transfer", contextWindow: limits.contextWindow ?? 32_768, maxTokens: limits.maxTokens ?? 8192 },
+    { defaults: limits.policy ?? {}, models: {} });
   const messages = context.messages;
   let latest = messages.length - 1;
   while (latest >= 0 && messages[latest].role !== "user") latest--;
@@ -68,15 +69,20 @@ export function buildPromptParts(context: any, fresh: boolean, unseenStart?: num
   // footprint separately, and reserve a conservative text-equivalent allowance.
   let imageBytes = 0;
   let imageCount = 0;
+  let imageWireChars = 0;
   const textOnly = prompt.map(block => {
     if (block.type !== "image") return block;
     imageBytes += Math.ceil((block.data?.length ?? 0) * 3 / 4);
+    imageWireChars += block.data?.length ?? 0;
     imageCount++;
     return { type: "image", mimeType: block.mimeType };
   });
-  if (imageBytes > 8_388_608) throw new Error("ACP image transfer exceeds the 8 MiB local payload budget; reduce attachments. No images were silently omitted.");
-  const bytes = Buffer.byteLength(JSON.stringify(textOnly), "utf8") + imageCount * 16_384;
-  const budget = historyBudget(limits.contextWindow);
-  if (bytes > budget) throw new Error(`ACP context transfer needs ${bytes} bytes; budget is ${budget}. Use OMP /compact to summarize history or reduce attachments. No history was silently truncated. OMP_ACP_HISTORY_BYTES configures the byte budget, capped by client model metadata.`);
+  if (imageBytes > options.maxImageBytes) throw new Error(`Request payload too large (413): local ACP image budget is ${options.maxImageBytes} bytes; reduce attachments. No images were silently omitted.`);
+  const serialized = JSON.stringify(textOnly);
+  const bytes = Buffer.byteLength(serialized, "utf8") + imageWireChars + imageCount * 10;
+  const budget = historyBudget(undefined, process.env, options.maxTransferBytes);
+  if (bytes > budget) throw new Error(`Request payload too large (413): local ACP transfer needs ${bytes} bytes; budget is ${budget}. Use OMP /compact or raise maxTransferBytes. No history was silently truncated.`);
+  const estimatedTokens = estimateTransferTokens(serialized, imageCount);
+  if (estimatedTokens > options.inputTokenBudget) throw new Error(`Maximum context length exceeded: local ACP estimate is ${estimatedTokens} tokens; input budget is ${options.inputTokenBudget}. Use OMP /compact. This is a heuristic estimate, not a server token count. No history was silently truncated.`);
   return { prompt, messageCount: messages.length };
 }

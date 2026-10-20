@@ -12,7 +12,7 @@ test("cold transfer retains old text beyond the former 32000-character cutoff", 
   assert.equal(output.prompt.at(-1).text, "LATEST");
 });
 test("overflow fails explicitly instead of silently losing history or tool results", () => {
-  assert.throws(() => buildPromptParts({ messages: [user("x".repeat(600_000)), user("LATEST")] }, true, undefined, { contextWindow: 1_000_000 }), /Use OMP \/compact/);
+  assert.throws(() => buildPromptParts({ messages: [user("x".repeat(1_500_000)), user("LATEST")] }, true, undefined, { contextWindow: 1_000_000, policy: { inputTokenBudget: 400_000 } }), /Maximum context length exceeded/);
 });
 test("warm delta sends only external results and retains tool identities", () => {
   const messages = [user("OLD"), user("CURRENT"), { role: "toolResult", toolName: "read", toolCallId: "call-42", content: [{ type: "text", text: "RESULT" }] }];
@@ -29,8 +29,11 @@ test("historical images remain actual attachments; thinking is not replayed as t
   assert.deepEqual(output.prompt.find(x => x.type === "image"), image);
   assert.ok(!JSON.stringify(output).includes("PRIVATE"));
 });
-test("transfer budget validates configuration and caps unknown model sizes", () => {
-  assert.equal(historyBudget(1_000_000, {}), 500_000);
-  assert.equal(historyBudget(32_768, {}), 16_384);
+test("byte budget is independent of token windows and can exceed the old 500KB limit", () => {
+  assert.equal(historyBudget(1_000_000, {}), 16_777_216);
+  assert.equal(historyBudget(32_768, {}), 16_777_216);
+  assert.equal(historyBudget(1_000_000, { OMP_ACP_HISTORY_BYTES: "33554432" }), 33_554_432);
   assert.throws(() => historyBudget(1_000_000, { OMP_ACP_HISTORY_BYTES: "NaN" }), /must be/);
+  const output = buildPromptParts({ messages: [user("x".repeat(1_200_000)), user("LATEST")] }, true, undefined, { contextWindow: 1_000_000 });
+  assert.ok(JSON.stringify(output).length > 1_200_000);
 });

@@ -29,6 +29,22 @@ try {
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8")), { nativeTools: "disabled", debugToolUpdates: false });
   await assert.rejects(command.handler("debug typo", context), /Usage:/);
   assert.ok(notices.length === 5);
+  await command.handler("context set default contextWindow 524288", context);
+  await command.handler("context set default maxTokens 32000", context);
+  await command.handler("context set default maxTransferBytes 33554432", context);
+  await command.handler("usage off", context);
+  let contextPolicy = JSON.parse(await fs.readFile(path.join(temporary, "context.json"), "utf8"));
+  assert.equal(contextPolicy.defaults.contextWindow, 524288);
+  assert.equal(contextPolicy.defaults.maxTokens, 32000);
+  assert.equal(contextPolicy.defaults.maxTransferBytes, 33554432);
+  assert.equal(contextPolicy.defaults.usageMode, "off");
+  await command.handler("usage auto", context);
+  contextPolicy = JSON.parse(await fs.readFile(path.join(temporary, "context.json"), "utf8"));
+  assert.equal(contextPolicy.defaults.usageMode, "auto");
+  assert.equal(contextPolicy.defaults.maxTransferBytes, 33554432);
+  await assert.rejects(command.handler("context set default inputTokenBudget 9999999", context), /must fit/);
+  await assert.rejects(command.handler("usage typo", context), /Usage:/);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8")), { nativeTools: "disabled", debugToolUpdates: false });
   console.log("Isolated native-tool command persistence and validation: PASS");
 } finally {
   await hooks.get("session_shutdown")?.({}, {});

@@ -12,6 +12,7 @@ export class TierConnection extends AntigravityAcpConnection {
   activePrompts = 0;
   usageQueryCount = 0;
   usageQueryMs = 0;
+  usageMode: "auto" | "off" = "auto";
   readonly contextUsage = new Map<string, { used: number; size: number }>();
   readonly usageStatus = new Map<string, { source: string; cache: string; error?: string }>();
   private readonly usageBaselines = new Map<string, SessionUsage>();
@@ -19,9 +20,10 @@ export class TierConnection extends AntigravityAcpConnection {
   private readonly usageCommands = new Set<string>();
   toolRouting: { nativeTools: NativeToolMode; channel: "pending" | "system-append" | "legacy-prompt" } | undefined;
 
-  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean }) {
+  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean; ompUsageMode?: "auto" | "off" }) {
     super(options);
     this.debugToolUpdates = options.ompDebugToolUpdates ?? false;
+    this.usageMode = options.ompUsageMode ?? "auto";
     this.setHandlers({ ...options.handlers, onUpdate: async notification => {
       const update: any = notification.update;
       if (update.sessionUpdate === "available_commands_update") {
@@ -43,6 +45,11 @@ export class TierConnection extends AntigravityAcpConnection {
         this.toolRouting!.channel = advanced ? "system-append" : "legacy-prompt";
       });
     }
+  }
+
+  configureUsage(mode: "auto" | "off") {
+    this.usageMode = mode;
+    this.usageBaselines.clear();
   }
 
   override async newSession(...args: Parameters<AntigravityAcpConnection["newSession"]>) {
@@ -68,7 +75,7 @@ export class TierConnection extends AntigravityAcpConnection {
     this.activePrompts++;
     const id = request.sessionId;
     try {
-      const queryUsage = process.env.OMP_ACP_USAGE !== "off" && this.usageCommands.has(id);
+      const queryUsage = process.env.OMP_ACP_USAGE !== "off" && this.usageMode !== "off" && this.usageCommands.has(id);
       if (queryUsage && !this.usageBaselines.has(id)) {
         try {
           const baseline = await this.readUsage(id, signal);
@@ -80,7 +87,7 @@ export class TierConnection extends AntigravityAcpConnection {
         const context = this.contextUsage.get(id);
         return context ? { ...value, _meta: { ...value._meta, ompContextTokens: context.used } } : value;
       };
-      if (response.usage || process.env.OMP_ACP_USAGE === "off" || !this.usageCommands.has(id) || signal?.aborted) {
+      if (response.usage || process.env.OMP_ACP_USAGE === "off" || this.usageMode === "off" || !this.usageCommands.has(id) || signal?.aborted) {
         this.usageBaselines.delete(id);
         this.usageStatus.set(id, { source: response.usage ? "ACP response" : "unavailable", cache: "unknown" });
         return withContext(response);

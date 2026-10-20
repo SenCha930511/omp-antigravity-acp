@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8 — 2026-10-20
+
+- Separate estimated token budgets from wire payload and image size limits; remove the erroneous context-window-to-byte clamp.
+- Add persistent default/per-model context settings and `/antigravity-acp context` inspection/update commands.
+- Add `/antigravity-acp usage auto|off`, retaining context occupancy when supplemental statistics are disabled.
+- Emit recognizable local context/payload overflow errors for OMP recovery and document provider-specific compaction thresholds.
+- Verify actual OMP automatic compaction with Flash and a synthetic occupancy trigger; benchmark usage-query latency over six Flash turns.
+
 ## 0.1.7 — 2026-10-20
 
 - Replace the 32,000-character reconstruction cutoff with bounded full-history transfer, explicit overflow errors and historical image attachments.

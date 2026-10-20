@@ -1,0 +1,21 @@
+{
+  "modelRoles": {
+    "default": "antigravity-acp/gemini-3.8-flash:low",
+    "smol": "antigravity-acp/gemini-3.8-flash:low",
+    "judge": "antigravity-acp/gemini-3.8-flash:low",
+    "slow": "antigravity-acp/gemini-3.8-flash:low"
+  },
+  "compaction": {
+    "enabled": true,
+    "experimentalContextManagement": true,
+    "thresholdTokens": 25000,
+    "thresholdPercent": -1,
+    "reserveTokens": 2048,
+    "keepRecentTokens": 1000,
+    "methodOrder": ["soft"],
+    "midTurnEnabled": true,
+    "asyncEnabled": false,
+    "autoContinue": false
+  },
+  "memory": { "enabled": false }
+}

@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.7 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.8 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -56,7 +56,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.7** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.8** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -80,7 +80,7 @@ omp plugin install npm:omp-antigravity-acp-provider
 To pin a specific release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp-provider@0.1.7
+omp plugin install npm:omp-antigravity-acp-provider@0.1.8
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
@@ -149,6 +149,11 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 | --- | --- |
 | `/antigravity-acp status` | Runtime, confirmed thinking and usage information |
 | `/antigravity-acp usage` | Current ACP context occupancy, accounting source and cache-data availability |
+| `/antigravity-acp usage auto` | Enable supplemental usage queries |
+| `/antigravity-acp usage off` | Skip supplemental queries; preserve context occupancy updates |
+| `/antigravity-acp context` | Show saved settings and effective per-model budgets |
+| `/antigravity-acp context set default KEY NUMBER` | Set a default token or payload setting |
+| `/antigravity-acp context set MODEL KEY NUMBER` | Override one advertised model ID |
 | `/antigravity-acp tools` | Available and omitted OMP tool schemas after a request |
 | `/antigravity-acp refresh` | Explicit network discovery and local catalog refresh |
 | `/antigravity-acp native-tools prefer` | Prefer OMP tools; retain native built-ins (default) |
@@ -191,7 +196,41 @@ Never include those user data directories, OAuth callback URLs, account identifi
 
 The adapter now transfers complete replay history within a bounded budget, including historical image attachments. It no longer silently keeps only a 32,000-character history tail. If a transfer does not fit, it stops with an explicit error requesting OMP `/compact` or smaller attachments. This is a local transfer limit, not Antigravity's model context window or its internal compaction threshold. Active requests, history text and system instructions share the text budget; images have a conservative allowance and a separate total payload ceiling of 8 MiB. No automatic summarization or extra inference is added by the transfer layer.
 
-The default text-equivalent budget is the smaller of 512 KiB and half the model's declared context-window number, measured in bytes rather than tokens. For the current Argon/Flash metadata this is 500,000 bytes. Byte budgeting does not replace tokenization or account for all hidden server instructions. Larger model context metadata is not a guarantee that every history can be imported. Latest requests and instructions are never silently shortened to fit.
+Token budgets and wire payload size are independent; the former 500,000-byte clamp is removed. The default wire payload limit is 16 MiB, configurable up to 128 MiB. Image data additionally defaults to an 8 MiB decoded payload limit. The automatic input-token budget is `contextWindow - maxTokens - reserveTokens`, where reserve defaults to the smaller of 16,384 and 5% of the window. A lightweight Unicode-aware estimate checks serialized text plus approximately 4,096 tokens per image. This is not a Gemini tokenizer, cannot guarantee exact token counts and does not include every hidden server instruction.
+
+Persist settings in `~/.omp/agent/antigravity-acp-provider/context.json`, or use the commands below. Defaults apply to every ACP model; entries under `models` override one advertised model ID. Model limits are client metadata and transfer budgets: they do not expand Google's server window or set an unsupported ACP generation-output parameter.
+
+```json
+{
+  "defaults": {
+    "contextWindow": 524288,
+    "maxTokens": 32000,
+    "reserveTokens": 16384,
+    "maxTransferBytes": 16777216,
+    "maxImageBytes": 8388608,
+    "usageMode": "off"
+  },
+  "models": {}
+}
+```
+
+Numeric keys: `contextWindow`, `maxTokens`, `reserveTokens`, `inputTokenBudget`, `maxTransferBytes`, `maxImageBytes`. Omit `inputTokenBudget` to calculate it automatically. A custom input budget must fit alongside output and reserve. Settings load once per process, without disk reads on every streamed chunk. Direct file edits require a restart; commands persist settings and refresh registration in the current process. Restart OMP or reselect the model to refresh displayed metadata. Other OMP processes must restart.
+
+```text
+/antigravity-acp context
+/antigravity-acp context set default maxTransferBytes 33554432
+/antigravity-acp context set gemini-4-argon contextWindow 1000000
+/antigravity-acp usage off
+/antigravity-acp usage auto
+```
+
+For OMP-managed automatic compaction, keep `compaction.enabled`, `compaction.midTurnEnabled` and `compaction.autoContinue` enabled with a working method such as `soft`. A provider-specific threshold can be set without changing other providers:
+
+```sh
+omp config set compaction.modelThresholds '{"antigravity-acp/*":"85%"}'
+```
+
+Merge that map with existing model-specific entries before running the command. At the example 524,288-token window, 85% triggers at 445,644 tokens, below the automatic transfer estimate budget of 475,904 tokens. OMP can also recover from local context/payload overflow errors. Google independently controls its internal agent summaries. Plugin installation does not automatically change OMP's global compaction configuration.
 
 Active sessions are reused. After five idle minutes, the adapter closes its ACP runtime, bridge and child processes; the next request tries to restore the saved server session. Active streams, outstanding ACP prompts, tools and permission waits prevent eviction. No background model prewarming, quota polling or tokenizer model download is performed.
 
@@ -199,21 +238,21 @@ Optional environment settings, applied when OMP starts:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `OMP_ACP_HISTORY_BYTES` | `524288` | Transfer budget in bytes, validated between 16 KiB and 8 MiB and capped by model metadata |
+| `OMP_ACP_HISTORY_BYTES` | context.json or 16 MiB | Optional byte-limit override, 64 KiB–128 MiB; independent of token window |
 | `OMP_ACP_IDLE_TIMEOUT_MS` | `300000` | Idle runtime reclamation; `0` disables it, positive values must be at least `1000` |
-| `OMP_ACP_USAGE` | automatic | Set to `off` to skip supplemental `/usage` queries and minimize terminal-event latency |
+| `OMP_ACP_USAGE` | context.json or auto | `off` forces supplemental queries off, including when the saved option is auto |
 
-When `/usage` is advertised by the official server, the adapter queries it after each completed ACP prompt and computes a difference from the previous cumulative snapshot. A restored session first establishes a baseline so its old tokens are not charged again. These are main-agent totals and can include multiple internal model calls. Thinking tokens count toward estimated output cost. Queries are bounded by a five-second deadline; unavailable/malformed usage or a counter reset does not turn a successful model answer into a billing claim. Native ACP response usage takes priority when supplied. Query failures can cancel/retire the connection; subsequent work can restore the server session.
+When automatic usage is enabled and `/usage` is advertised by the official server, the adapter queries it after each completed ACP prompt and computes a difference from the previous cumulative snapshot. A restored session first establishes a baseline so its old tokens are not charged again. These are main-agent totals and can include multiple internal model calls. Thinking tokens count toward estimated output cost. Queries are bounded by a five-second deadline; unavailable/malformed usage or a counter reset does not turn a successful model answer into a billing claim. Native ACP response usage takes priority when supplied. Query failures can cancel/retire the connection; subsequent work can restore the server session.
 
 ACP `usage_update.used` is passed to OMP separately as `usage.contextTokens`, rather than treating aggregate billable consumption as context occupancy. OMP 18.12.3 recognizes this field; it can still use a local stored-history estimate when deciding whether to compact. Google continues to control its own internal summaries.
 
 Stable tool ordering and stable context-resource identifiers avoid unnecessary client-side prefix changes. They do not guarantee implicit cache hits. `/antigravity-acp usage` marks cache information as `unknown` when Google omits it; zero cache fields in OMP's numeric usage structure must not be read as proof of zero backend caching. If cache counts are missing, the API-equivalent estimate prices input as uncached and cannot reflect any unreported cache discount. This is not a subscription bill or a measurement of quota deduction.
 
-See the [continuity and resource verification report](docs/continuity-performance-0.1.7.md) for measured Flash behavior and remaining limits.
+See the [0.1.8 context/compaction and usage benchmark](docs/context-compaction-0.1.8.md) for current settings and measurements. The [0.1.7 report](docs/continuity-performance-0.1.7.md) documents the previous implementation.
 
 ## Limitations
 
-- Argon/Flash retain client metadata of 1,000,000 context tokens and 65,536 output tokens. Other models use conservative defaults of 32,768 context tokens and 8,192 output tokens because the model selector does not supply these limits. These are client metadata, not verified server limits or controls over Antigravity's internal compaction.
+- Argon/Flash default to client metadata of 1,000,000 context tokens and 65,536 output tokens. These can be overridden in context.json. Other models use conservative defaults of 32,768 context tokens and 8,192 output tokens because the model selector does not supply these limits. These are client metadata, not verified server limits or controls over Antigravity's internal compaction.
 - API background execution and long decode controls are not exposed.
 - The bridge advertises text and image input, not the full Gemini API media surface.
 - Thought summaries appear only if the ACP server emits them. A verified Argon High request returned no `agent_thought_chunk`; plan progress and optional debug tool-status lines can appear in OMP's thinking area.

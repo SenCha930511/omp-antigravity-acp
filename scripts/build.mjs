@@ -59,7 +59,7 @@ const result = await build({
         if (source.split(marker).length !== 2) throw new Error("Pinned upstream context seam changed; review compatibility");
         const retirement = "if (!persistent) await this.dropBinding(key, binding);";
         if (source.split(retirement).length !== 2) throw new Error("Pinned upstream connection retirement seam changed; review compatibility");
-        return { contents: source.replace(marker, "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow })")
+        return { contents: source.replace(marker, "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })")
           .replace(retirement, "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);"), loader: "ts" };
       });
       builder.onLoad({ filter: /\/(?:process|runtime-manifest)\.ts$/ }, async ({ path: file }) => {

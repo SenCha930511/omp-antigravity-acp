@@ -42,6 +42,11 @@ try {
   const before = queries;
   await fixture(zero, false).prompt(request);
   assert.equal(queries, before, "Never send an unadvertised slash command to the model");
+  const disabled = fixture();
+  disabled.configureUsage("off");
+  const withoutQuery = await disabled.prompt(request);
+  assert.equal(queries, before, "Per-plugin off mode must skip supplemental queries");
+  assert.equal(withoutQuery._meta.ompContextTokens, 75, "Off mode must preserve context occupancy for auto-compaction");
   fail = false;
   const restored = fixture(undefined);
   // Explicitly clear the baseline; /usage snapshots before and after are equal.

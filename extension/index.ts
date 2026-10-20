@@ -7,6 +7,7 @@ import fs from "node:fs";
 import { officialApiCost, applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
 import { stableTools } from "./tool-order.ts";
+import { loadContextSettings, saveContextSettings, resolveContextOptions, updateContextSettings } from "./context-settings.ts";
 import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model-catalog.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
@@ -34,6 +35,8 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   const configPath = path.join(stateDir, "config.json");
   const cachePath = path.join(stateDir, "models-cache.json");
   const toolPolicyPath = path.join(stateDir, "omp-tools.json");
+  const contextPath = path.join(stateDir, "context.json");
+  let contextSettings = loadContextSettings(contextPath);
   // Loading this global extension must not start ACP or query Google.
   let readiness: Promise<void> | undefined;
   function prepareRuntime() {
@@ -53,7 +56,8 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     const ownedConnections = new Set<any>();
     const runtime = new AntigravityRuntime((options: any) => {
       const policy = loadToolPolicy(toolPolicyPath);
-      const connection = new TierConnection({ ...options, ompNativeTools: policy.nativeTools, ompDebugToolUpdates: policy.debugToolUpdates });
+      const connection = new TierConnection({ ...options, ompNativeTools: policy.nativeTools, ompDebugToolUpdates: policy.debugToolUpdates,
+        ompUsageMode: contextSettings.defaults.usageMode ?? "auto" });
       connections.add(connection);
       ownedConnections.add(connection);
       void connection.process.exited.finally(() => connections.delete(connection));
@@ -90,9 +94,35 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     },
   });
   pi.registerCommand("antigravity-acp", {
-    description: "Inspect ACP status/tools/usage, toggle debug (on|off), refresh models, set native-tools or permissions",
+    description: "Inspect ACP status/tools/usage/context, configure budgets, toggle debug, refresh models or set tool policies",
     async handler(args: string, ctx: any) {
-      const [command, value] = args.trim().split(/\s+/);
+      const parts = args.trim().split(/\s+/);
+      const [command, value] = parts;
+      if (command === "context") {
+        if (value === "set") {
+          const [, , target, key, raw] = parts;
+          if (parts.length !== 5) throw new Error("Usage: /antigravity-acp context set default|MODEL KEY NUMBER");
+          const next = updateContextSettings(contextSettings, target, key, key === "usageMode" ? raw : Number(raw));
+          for (const model of initialModels) resolveContextOptions(model, next);
+          saveContextSettings(contextPath, next);
+          contextSettings = next;
+          if (key === "usageMode") for (const connection of connections) connection.configureUsage(raw as "auto" | "off");
+          initialModels = catalog(initialModels);
+          adapted.registerProvider();
+          ctx.ui.notify("ACP context settings saved. Restart OMP or reselect the model to refresh its displayed limits.", "info");
+        } else if (value) throw new Error("Usage: /antigravity-acp context [set default|MODEL KEY NUMBER]");
+        else ctx.ui.notify(JSON.stringify({ file: contextPath, settings: contextSettings,
+          effective: initialModels.map((model: any) => ({ id: model.id, ...resolveContextOptions(model, contextSettings) })) }, null, 2), "info");
+        return;
+      }
+      if (command === "usage" && value) {
+        if (value !== "auto" && value !== "off") throw new Error("Usage: /antigravity-acp usage [auto|off]");
+        contextSettings = updateContextSettings(contextSettings, "default", "usageMode", value);
+        saveContextSettings(contextPath, contextSettings);
+        for (const connection of connections) connection.configureUsage(value);
+        ctx.ui.notify(`Supplemental ACP usage queries: ${value}${process.env.OMP_ACP_USAGE === "off" ? " (environment override keeps queries off)" : ""}. Context occupancy updates remain enabled.`, "info");
+        return;
+      }
       if (command === "debug") {
         if (value !== "on" && value !== "off") throw new Error("Usage: /antigravity-acp debug on|off");
         const enabled = value === "on";
@@ -110,11 +140,13 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       }
       const { runtime } = runtimes.get(sessionIdOf(ctx));
       if (command === "usage") {
-        ctx.ui.notify(JSON.stringify([...connections].map(connection => ({
+        ctx.ui.notify(JSON.stringify({ configured: contextSettings.defaults.usageMode ?? "auto",
+          effective: process.env.OMP_ACP_USAGE === "off" ? "off" : contextSettings.defaults.usageMode ?? "auto",
+          connections: [...connections].map(connection => ({
           context: [...connection.contextUsage.values()],
           accounting: [...connection.usageStatus.values()],
           activePrompts: connection.activePrompts,
-        })), null, 2), "info");
+        })) }, null, 2), "info");
         return;
       }
       if (command === "refresh") {
@@ -141,7 +173,9 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   const upstreamModels = new Map<string, any>();
   function catalog(models: any[]) {
     return models.map(source => {
-      const model = { ...source, cost: officialApiCost(source.id) ?? source.cost };
+      const limits = resolveContextOptions(source, contextSettings);
+      const model = { ...source, contextWindow: limits.contextWindow, maxTokens: limits.maxTokens,
+        ompContextPolicy: limits, cost: officialApiCost(source.id) ?? source.cost };
       const efforts = EFFORTS.filter(effort => model.thinkingLevelMap?.[effort]);
       if (efforts.length && !model.thinking) {
         model.thinking = { mode: "effort", efforts, defaultLevel: efforts.includes("high") ? "high" : efforts[0] };
