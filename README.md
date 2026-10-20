@@ -1,6 +1,6 @@
 # omp-antigravity-acp-provider
 
-Previously named `omp-antigravity-acp`. When migrating, uninstall the former plugin before installing the renamed package; keep only one adapter enabled. The `antigravity-acp` provider ID, `/antigravity-acp` commands, settings and session directories remain unchanged. Existing GitHub repository links redirect to the renamed repository.
+Previously named `omp-antigravity-acp`. See [Migrating from the former name](#migrating-from-the-former-name) for upgrade commands. Existing GitHub repository links redirect to this repository.
 
 [![npm version](https://img.shields.io/npm/v/omp-antigravity-acp-provider.svg)](https://www.npmjs.com/package/omp-antigravity-acp-provider)
 [![npm downloads](https://img.shields.io/npm/dm/omp-antigravity-acp-provider.svg)](https://www.npmjs.com/package/omp-antigravity-acp-provider)
@@ -71,6 +71,29 @@ omp plugin marketplace update sencha-plugins
 omp plugin upgrade omp-antigravity-acp-provider@sencha-plugins
 ```
 
+## Migrating from the former name
+
+The npm package and marketplace plugin are now named `omp-antigravity-acp-provider`. An upgrade of the old plugin does not change its package identity. Stop OMP first and use the migration instructions for your original installation method.
+
+For an existing marketplace installation:
+
+```sh
+omp plugin uninstall omp-antigravity-acp@sencha-plugins
+omp plugin marketplace update sencha-plugins
+omp plugin install omp-antigravity-acp-provider@sencha-plugins
+```
+
+Existing `sencha-plugins` sources using the former GitHub URL follow GitHub's redirect. New installations should use `SenCha930511/omp-antigravity-acp-provider`.
+
+For an existing direct npm installation:
+
+```sh
+omp plugin uninstall npm:omp-antigravity-acp
+omp plugin install npm:omp-antigravity-acp-provider
+```
+
+Restart OMP afterward. Keep only one adapter enabled. The provider ID `antigravity-acp`, `/antigravity-acp` commands and `~/.omp/agent/antigravity-acp-provider/` data directory retain their names, preserving settings and session mappings. Remove any manually configured extension path for the former package before enabling the renamed installation.
+
 ## Install directly from npm
 
 The prebuilt package is published on [npm as `omp-antigravity-acp-provider`](https://www.npmjs.com/package/omp-antigravity-acp-provider). Use Node.js 22.19 or newer and OMP to install the latest release:
@@ -112,6 +135,8 @@ Use the OMP installation target when installing from the search result. The dire
 Use Node.js 22.19 or newer and OMP. Node.js is also required by the upstream process supervisor.
 
 ```sh
+git clone https://github.com/SenCha930511/omp-antigravity-acp-provider.git
+cd omp-antigravity-acp-provider
 npm ci
 npm run check
 ```
@@ -141,7 +166,7 @@ First use or login may download the official runtime. The observed macOS runtime
 
 If OMP's `enabledModels` whitelist is configured, add `antigravity-acp/*` alongside your existing entries in `~/.omp/agent/config.yml` to allow newly discovered models. Use individual `antigravity-acp/<server-model-id>` entries instead if you prefer a restricted list. The adapter does not rewrite that whitelist or any model-role preset.
 
-After upgrading from an older adapter, run `/antigravity-acp refresh` once to replace the old cached list with per-model selector choices. Startup and ordinary catalog listing remain offline, so new server models appear after an explicit refresh. Availability in the Antigravity app or CLI does not guarantee availability through ACP: on the tested account, ACP still advertised only `gemini-4-argon` and `gemini-3.8-flash` on 2026-10-19.
+After upgrading from an older adapter, run `/antigravity-acp refresh` once to replace the old cached list with per-model selector choices. Startup and ordinary catalog listing remain offline, so new server models appear after an explicit refresh. Availability in the Antigravity app or CLI does not guarantee availability through ACP: on the tested account, ACP still advertised only `gemini-4-argon` and `gemini-3.8-flash` on 2026-10-20.
 
 ## Commands
 
