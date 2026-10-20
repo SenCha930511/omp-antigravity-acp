@@ -6,6 +6,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { officialApiCost, applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
+import { stableTools } from "./tool-order.ts";
 import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model-catalog.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
@@ -43,17 +44,25 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     return readiness;
   }
   const connections = new Set<any>();
+  const idleTimeoutMs = Number(process.env.OMP_ACP_IDLE_TIMEOUT_MS ?? 300_000);
+  if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 0 || (idleTimeoutMs > 0 && idleTimeoutMs < 1000)) {
+    throw new Error("OMP_ACP_IDLE_TIMEOUT_MS must be 0 (disabled) or an integer of at least 1000");
+  }
   let lastToolAudit: { offered: string[]; available: string[]; omitted: any[] } | undefined;
   const runtimes = new SessionRuntimePool(() => {
+    const ownedConnections = new Set<any>();
     const runtime = new AntigravityRuntime((options: any) => {
       const policy = loadToolPolicy(toolPolicyPath);
       const connection = new TierConnection({ ...options, ompNativeTools: policy.nativeTools, ompDebugToolUpdates: policy.debugToolUpdates });
       connections.add(connection);
+      ownedConnections.add(connection);
       void connection.process.exited.finally(() => connections.delete(connection));
+      void connection.process.exited.finally(() => ownedConnections.delete(connection));
       return connection;
     }, loadConfig(configPath).permissions, new AcpSessionStore(path.join(stateDir, "sessions.json")));
-    return { runtime, provider: createAntigravityProvider(runtime).provider };
-  }, bundle => bundle.runtime.close());
+    return { runtime, provider: createAntigravityProvider(runtime).provider,
+      isBusy: () => [...ownedConnections].some(connection => connection.activePrompts > 0) };
+  }, bundle => bundle.runtime.close(), { timeoutMs: idleTimeoutMs, canDispose: bundle => !bundle.isBusy() });
   const sessionIdOf = (ctx: any): string | undefined => ctx?.sessionManager?.getSessionId?.();
   pi.on("session_shutdown", async (_event: any, ctx: any) => {
     const sessionId = sessionIdOf(ctx);
@@ -81,7 +90,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     },
   });
   pi.registerCommand("antigravity-acp", {
-    description: "Inspect ACP status/tools, toggle debug (on|off), refresh models, set native-tools or permissions",
+    description: "Inspect ACP status/tools/usage, toggle debug (on|off), refresh models, set native-tools or permissions",
     async handler(args: string, ctx: any) {
       const [command, value] = args.trim().split(/\s+/);
       if (command === "debug") {
@@ -100,6 +109,14 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         return;
       }
       const { runtime } = runtimes.get(sessionIdOf(ctx));
+      if (command === "usage") {
+        ctx.ui.notify(JSON.stringify([...connections].map(connection => ({
+          context: [...connection.contextUsage.values()],
+          accounting: [...connection.usageStatus.values()],
+          activePrompts: connection.activePrompts,
+        })), null, 2), "info");
+        return;
+      }
       if (command === "refresh") {
         initialModels = await refreshCatalog();
         adapted.registerProvider();
@@ -197,7 +214,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           return catalog(cached.length ? projectCatalog(cached) : runtimes.get().provider.getModels());
         },
         streamSimple(model: any, context: any, options: any) {
-          const tools = context.tools ?? [];
+          const tools = stableTools(context.tools ?? []);
           const bridged = tools.filter((tool: any) => tool.name !== PERMISSION_TOOL_NAME);
           const omitted = planToolProjection(tools);
           const omittedNames = new Set(omitted.map((tool: any) => tool.name));
@@ -205,6 +222,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           lastToolAudit = { offered: bridged.map((tool: any) => tool.name), available: available.map((tool: any) => tool.name), omitted };
           const routedContext = {
             ...context,
+            tools,
             systemPrompt: `${context.systemPrompt ?? ""}\n\n${TOOL_ROUTING}\nOMP tool names: ${available.length ? available.map((tool: any) => `pi_${tool.name}`).join(", ") : "none currently available; report missing capabilities before proposing native operations"}`,
           };
           if (process.env.OMP_ACP_TRACE === "1") {
@@ -221,18 +239,21 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
               if (!upstreamModels.has(model.id)) await refreshCatalog();
               const original = upstreamModels.get(model.id);
               if (!original) throw new Error(`Antigravity model was not discovered: ${model.id}. Run /antigravity-acp refresh.`);
-              const { runtime, provider } = runtimes.get(options?.sessionId);
-              const stream = provider.streamSimple(selectRuntimeModel(original, options?.reasoning), routedContext, options);
-              for await (const event of stream) {
-                const message = event.message ?? event.partial;
-                if (message?.usage) applyApiCostEstimate(model.id, message.usage, message.timestamp ?? Date.now());
-                deferred.stream.push(event);
-              }
-              deferred.stream.end();
-              if (process.env.OMP_ACP_TRACE === "1") {
-                const snapshot = await runtime.snapshot();
-                console.error("[ACP bridge]", JSON.stringify(snapshot.processes.map((item: any) => ({ mcpHttp: item.mcpHttp, omittedTools: item.omittedTools }))));
-              }
+              const lease = runtimes.acquire(options?.sessionId);
+              const { runtime, provider } = lease.value;
+              try {
+                const stream = provider.streamSimple(selectRuntimeModel(original, options?.reasoning), routedContext, options);
+                for await (const event of stream) {
+                  const message = event.message ?? event.partial;
+                  if (message?.usage) applyApiCostEstimate(model.id, message.usage, message.timestamp ?? Date.now());
+                  deferred.stream.push(event);
+                }
+                deferred.stream.end();
+                if (process.env.OMP_ACP_TRACE === "1") {
+                  const snapshot = await runtime.snapshot();
+                  console.error("[ACP bridge]", JSON.stringify(snapshot.processes.map((item: any) => ({ mcpHttp: item.mcpHttp, omittedTools: item.omittedTools }))));
+                }
+              } finally { lease.release(); }
             } catch (error) {
               deferred.fail(error, options?.signal?.aborted === true);
             }

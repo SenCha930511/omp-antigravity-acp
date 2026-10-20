@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.7 — 2026-10-20
+
+- Replace the 32,000-character reconstruction cutoff with bounded full-history transfer, explicit overflow errors and historical image attachments.
+- Read official advertised `/usage` totals and attach per-turn main-agent token deltas, including thinking output; mark absent cache metadata unknown.
+- Supply ACP context occupancy independently of aggregate consumption through OMP's `usage.contextTokens` field.
+- Reclaim idle runtimes after five minutes while protecting active streams, pending tools and permissions; preserve server session restoration.
+- Stabilize tool ordering and context resource identifiers to avoid unnecessary prefix changes, without promising backend cache hits.
+- Add offline regressions, Flash-only continuity/resource measurements and opt-out performance settings.
+
 ## 0.1.6 — 2026-10-20
 
 - Rename the project, npm package and marketplace plugin to `omp-antigravity-acp-provider`.

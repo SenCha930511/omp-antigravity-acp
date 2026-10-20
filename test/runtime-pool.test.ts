@@ -2,6 +2,27 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SessionRuntimePool } from "../extension/runtime-pool.ts";
 
+test("idle eviction waits for leases and outstanding ACP work, then closes exactly once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let busy = true;
+  const disposed: number[] = [];
+  let serial = 0;
+  const pool = new SessionRuntimePool(() => ({ id: ++serial }), async e => { disposed.push(e.id); },
+    { timeoutMs: 1000, canDispose: () => !busy });
+  const lease = pool.acquire("main");
+  t.mock.timers.tick(5000);
+  assert.deepEqual(disposed, []);
+  lease.release(); lease.release();
+  t.mock.timers.tick(1000);
+  assert.deepEqual(disposed, []);
+  busy = false;
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.deepEqual(disposed, [lease.value.id]);
+  assert.notEqual(pool.get("main"), lease.value);
+  await pool.closeAll();
+});
+
 function fixture() {
   let created = 0;
   const disposed: number[] = [];

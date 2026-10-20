@@ -46,6 +46,22 @@ const result = await build({
   plugins: [{
     name: "portable-upstream-assets",
     setup(builder) {
+      builder.onResolve({ filter: /^\.\/stream\/context\.js$/ }, ({ importer }) => {
+        if (importer === path.join(upstream, "src/runtime.ts")) return { path: path.join(root, "extension/context-transfer.ts") };
+      });
+      builder.onResolve({ filter: /^\.\/stream\/usage\.js$/ }, ({ importer }) => {
+        if (importer === path.join(upstream, "src/runtime.ts")) return { path: path.join(root, "extension/usage.ts") };
+      });
+      builder.onLoad({ filter: /\/src\/runtime\.ts$/ }, async ({ path: file }) => {
+        if (file !== path.join(upstream, "src/runtime.ts")) return;
+        const source = await fs.readFile(file, "utf8");
+        const marker = "buildPromptParts(context, fresh, unseenStart)";
+        if (source.split(marker).length !== 2) throw new Error("Pinned upstream context seam changed; review compatibility");
+        const retirement = "if (!persistent) await this.dropBinding(key, binding);";
+        if (source.split(retirement).length !== 2) throw new Error("Pinned upstream connection retirement seam changed; review compatibility");
+        return { contents: source.replace(marker, "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow })")
+          .replace(retirement, "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);"), loader: "ts" };
+      });
       builder.onLoad({ filter: /\/(?:process|runtime-manifest)\.ts$/ }, async ({ path: file }) => {
         const relative = path.relative(upstream, file).split(path.sep).join("/");
         return {
