@@ -1,16 +1,16 @@
 {
-  "name": "omp-antigravity-acp",
-  "version": "0.1.5",
+  "name": "omp-antigravity-acp-provider",
+  "version": "0.1.6",
   "description": "Google Antigravity ACP provider for Oh My Pi (OMP), with tool bridging and per-model thinking; derived from zacbemis/pi-antigravity-acp-provider",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/SenCha930511/omp-antigravity-acp.git"
+    "url": "git+https://github.com/SenCha930511/omp-antigravity-acp-provider.git"
   },
-  "homepage": "https://github.com/SenCha930511/omp-antigravity-acp#readme",
+  "homepage": "https://github.com/SenCha930511/omp-antigravity-acp-provider#readme",
   "bugs": {
-    "url": "https://github.com/SenCha930511/omp-antigravity-acp/issues"
+    "url": "https://github.com/SenCha930511/omp-antigravity-acp-provider/issues"
   },
   "publishConfig": {
     "access": "public",

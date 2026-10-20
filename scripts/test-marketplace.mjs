@@ -24,12 +24,12 @@ const command = (...args) => execute("omp", args, {
 });
 
 try {
-  const source = process.argv.includes("--remote") ? "SenCha930511/omp-antigravity-acp" : root;
+  const source = process.argv.includes("--remote") ? "SenCha930511/omp-antigravity-acp-provider" : root;
   await command("plugin", "marketplace", "add", source);
   const discovery = await command("plugin", "discover", "sencha-plugins");
-  assert.ok(discovery.stdout.includes("omp-antigravity-acp"));
+  assert.ok(discovery.stdout.includes("omp-antigravity-acp-provider"));
   console.log("Marketplace add and plugin discovery: PASS");
-  await command("plugin", "install", "omp-antigravity-acp@sencha-plugins");
+  await command("plugin", "install", "omp-antigravity-acp-provider@sencha-plugins");
   console.log("Marketplace install and plugin registration: PASS");
   const cold = await command("models", "antigravity-acp", "--json");
   const models = JSON.parse(cold.stdout).models;
@@ -43,7 +43,7 @@ try {
   });
   assert.deepEqual(JSON.parse(warm.stdout).models, models);
   console.log("Second process reuses cached adapter with npm offline: PASS");
-  await command("plugin", "uninstall", "omp-antigravity-acp@sencha-plugins");
+  await command("plugin", "uninstall", "omp-antigravity-acp-provider@sencha-plugins");
   await command("plugin", "marketplace", "remove", "sencha-plugins");
   console.log("Marketplace uninstall and source removal: PASS");
 } finally {

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { build } from "esbuild";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const output = await mkdtemp(path.join(tmpdir(), "omp-antigravity-acp-tests-"));
+const output = await mkdtemp(path.join(tmpdir(), "omp-antigravity-acp-provider-tests-"));
 try {
   const entries = (await readdir(path.join(root, "test")))
     .filter(file => file.endsWith(".test.ts"))

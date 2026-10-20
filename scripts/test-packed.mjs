@@ -29,7 +29,7 @@ try {
     timeout: 240_000,
     maxBuffer: 4 * 1024 * 1024,
   });
-  const installed = path.join(install, "node_modules/omp-antigravity-acp");
+  const installed = path.join(install, "node_modules/omp-antigravity-acp-provider");
   const runtime = path.join(installed, "extension/runtime.mjs");
   const exports = await import(pathToFileURL(runtime).href);
   assert.equal(typeof exports.AntigravityRuntime, "function");

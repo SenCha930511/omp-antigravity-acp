@@ -7,9 +7,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 if (!process.argv.includes("--live")) throw new Error("Pass --live explicitly; this probe consumes quota and creates an ACP session.");
 
-const wrapper = path.join(os.homedir(), ".omp/plugins/node_modules/omp-antigravity-acp");
+const wrapper = path.join(os.homedir(), ".omp/plugins/node_modules/omp-antigravity-acp-provider");
 const version = JSON.parse(fs.readFileSync(path.join(wrapper, "package.json"), "utf8")).version;
-const root = path.join(wrapper, ".runtime", version, "node_modules/omp-antigravity-acp");
+const root = path.join(wrapper, ".runtime", version, "node_modules/omp-antigravity-acp-provider");
 const { TierConnection, AntigravityRuntime, Type } = await import(pathToFileURL(path.join(root, "extension/runtime.mjs")).href);
 const { projectCatalog, selectRuntimeModel } = await import(pathToFileURL(path.join(root, "extension/model-catalog.ts")).href);
 const cache = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".omp/agent/antigravity-acp-provider/models-cache.json"), "utf8"));

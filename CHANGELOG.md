@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6 — 2026-10-20
+
+- Rename the project, npm package and marketplace plugin to `omp-antigravity-acp-provider`.
+- Preserve the `antigravity-acp` provider ID, commands, configuration and session paths.
+- Retain upstream fork attribution and document migration from the former name.
+
 ## 0.1.5 — 2026-10-20
 
 - Hide duplicate ACP tool-status lines by default; `/antigravity-acp debug on|off` controls their display immediately without recreating the connection.

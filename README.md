@@ -1,7 +1,9 @@
-# omp-antigravity-acp
+# omp-antigravity-acp-provider
 
-[![npm version](https://img.shields.io/npm/v/omp-antigravity-acp.svg)](https://www.npmjs.com/package/omp-antigravity-acp)
-[![npm downloads](https://img.shields.io/npm/dm/omp-antigravity-acp.svg)](https://www.npmjs.com/package/omp-antigravity-acp)
+Previously named `omp-antigravity-acp`. When migrating, uninstall the former plugin before installing the renamed package; keep only one adapter enabled. The `antigravity-acp` provider ID, `/antigravity-acp` commands, settings and session directories remain unchanged. Existing GitHub repository links redirect to the renamed repository.
+
+[![npm version](https://img.shields.io/npm/v/omp-antigravity-acp-provider.svg)](https://www.npmjs.com/package/omp-antigravity-acp-provider)
+[![npm downloads](https://img.shields.io/npm/dm/omp-antigravity-acp-provider.svg)](https://www.npmjs.com/package/omp-antigravity-acp-provider)
 
 Google Antigravity's official ACP server, adapted for **Oh My Pi (OMP)**.
 
@@ -19,7 +21,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.5 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.6 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -43,20 +45,20 @@ No server is needed: this GitHub repository is also an OMP marketplace named **s
 Add the source once, then install the plugin:
 
 ```sh
-omp plugin marketplace add SenCha930511/omp-antigravity-acp
-omp plugin install omp-antigravity-acp@sencha-plugins
+omp plugin marketplace add SenCha930511/omp-antigravity-acp-provider
+omp plugin install omp-antigravity-acp-provider@sencha-plugins
 ```
 
 Or, inside OMP:
 
 ```text
-/marketplace add SenCha930511/omp-antigravity-acp
+/marketplace add SenCha930511/omp-antigravity-acp-provider
 /marketplace
 ```
 
-Select **omp-antigravity-acp** in the browser, install it, and restart OMP to load the provider.
+Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.5** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.6** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -66,21 +68,21 @@ To refresh the catalog and upgrade an existing marketplace installation:
 
 ```sh
 omp plugin marketplace update sencha-plugins
-omp plugin upgrade omp-antigravity-acp@sencha-plugins
+omp plugin upgrade omp-antigravity-acp-provider@sencha-plugins
 ```
 
 ## Install directly from npm
 
-The prebuilt package is published on [npm as `omp-antigravity-acp`](https://www.npmjs.com/package/omp-antigravity-acp). Use Node.js 22.19 or newer and OMP to install the latest release:
+The prebuilt package is published on [npm as `omp-antigravity-acp-provider`](https://www.npmjs.com/package/omp-antigravity-acp-provider). Use Node.js 22.19 or newer and OMP to install the latest release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp
+omp plugin install npm:omp-antigravity-acp-provider
 ```
 
-To install the first public npm release explicitly:
+To pin the renamed release explicitly:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp@0.1.1
+omp plugin install npm:omp-antigravity-acp-provider@0.1.6
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
@@ -94,16 +96,16 @@ The upstream dependency declares Pi-specific peers, so package managers that aut
 With zmarketplace already installed in OMP:
 
 ```text
-/zmarketplace search omp-antigravity-acp --eco=omp --type=extension
+/zmarketplace search omp-antigravity-acp-provider --eco=omp --type=extension
 ```
 
 Or search from a terminal with Bun:
 
 ```sh
-bunx zmarketplace search omp-antigravity-acp --eco=omp --type=extension
+bunx zmarketplace search omp-antigravity-acp-provider --eco=omp --type=extension
 ```
 
-Use the OMP installation target when installing from the search result. The direct OMP command is `omp plugin install npm:omp-antigravity-acp`. Newly published metadata may take time to appear in npm search results.
+Use the OMP installation target when installing from the search result. The direct OMP command is `omp plugin install npm:omp-antigravity-acp-provider`. Newly published metadata may take time to appear in npm search results.
 
 ## Build from source
 
@@ -124,7 +126,7 @@ For a temporary session, from this repository:
 omp --no-extensions -e ./extension/index.ts
 ```
 
-This disables other extension discovery for that invocation, avoiding duplicate registration of an existing ACP adapter. For normal installation, use OMP's extension configuration or point `~/.omp/agent/extensions/omp-antigravity-acp` at the built `extension` directory. Disable any previous `antigravity-acp-omp` or upstream Pi extension first; do not load two adapters for the same provider.
+This disables other extension discovery for that invocation, avoiding duplicate registration of an existing ACP adapter. For normal installation, use OMP's extension configuration or point `~/.omp/agent/extensions/omp-antigravity-acp-provider` at the built `extension` directory. Disable any previous `antigravity-acp-omp` or upstream Pi extension first; do not load two adapters for the same provider.
 
 This repository does not change an existing OMP installation or overwrite its settings.
 

@@ -11,9 +11,9 @@ if (!process.argv.includes("--live")) throw new Error("Pass --live explicitly: t
 // package, resolve its pinned version rather than assuming the npm latest tag.
 let root = process.env.OMP_ACP_DIAGNOSTIC_ROOT ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 if (process.argv.includes("--installed")) {
-  const wrapper = path.join(os.homedir(), ".omp/plugins/node_modules/omp-antigravity-acp");
+  const wrapper = path.join(os.homedir(), ".omp/plugins/node_modules/omp-antigravity-acp-provider");
   const version = JSON.parse(fs.readFileSync(path.join(wrapper, "package.json"), "utf8")).version;
-  root = path.join(wrapper, ".runtime", version, "node_modules/omp-antigravity-acp");
+  root = path.join(wrapper, ".runtime", version, "node_modules/omp-antigravity-acp-provider");
 }
 const { TierConnection, Type } = await import(pathToFileURL(path.join(root, "extension/runtime.mjs")).href);
 const { default: extension } = await import(pathToFileURL(path.join(root, "extension/index.ts")).href);
