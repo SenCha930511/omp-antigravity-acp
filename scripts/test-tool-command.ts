@@ -15,6 +15,18 @@ try {
   }, temporary);
   const notices: string[] = [];
   const context = { ui: { notify: (text: string) => notices.push(text) }, sessionManager: { getSessionId: () => "fixture" } };
+  await command.handler("cleanup", context);
+  assert.equal(JSON.parse(notices.pop()!).mode, "conservative");
+  for (const mode of ["off", "conservative", "timeout 3"]) {
+    await command.handler(`cleanup ${mode}`, context);
+    const saved = JSON.parse(await fs.readFile(path.join(temporary, "cleanup.json"), "utf8"));
+    assert.equal(saved.mode, mode.split(" ")[0]);
+    notices.pop();
+  }
+  assert.equal(JSON.parse(await fs.readFile(path.join(temporary, "cleanup.json"), "utf8")).idleDays, 3);
+  for (const invalid of ["typo", "timeout 0", "timeout NaN", "off 7", "timeout 7 extra"]) {
+    await assert.rejects(command.handler(`cleanup ${invalid}`, context));
+  }
   for (const mode of ["disabled", "prefer"]) {
     await command.handler(`native-tools ${mode}`, context);
     const policy = JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8"));

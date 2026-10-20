@@ -12,7 +12,7 @@ import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
 import { loadNativeToolMode, loadToolPolicy, saveNativeToolMode, saveDebugToolUpdates } from "./tool-policy.ts";
-import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter } from "./runtime.mjs";
+import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter, SessionCleanup } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
 
@@ -37,6 +37,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   const toolPolicyPath = path.join(stateDir, "omp-tools.json");
   const contextPath = path.join(stateDir, "context.json");
   let contextSettings = loadContextSettings(contextPath);
+  const cleanup = new SessionCleanup(stateDir);
   // Loading this global extension must not start ACP or query Google.
   let readiness: Promise<void> | undefined;
   function prepareRuntime() {
@@ -57,7 +58,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     const runtime = new AntigravityRuntime((options: any) => {
       const policy = loadToolPolicy(toolPolicyPath);
       const connection = new TierConnection({ ...options, ompNativeTools: policy.nativeTools, ompDebugToolUpdates: policy.debugToolUpdates,
-        ompUsageMode: contextSettings.defaults.usageMode ?? "auto" });
+        ompUsageMode: contextSettings.defaults.usageMode ?? "auto", ompCleanup: cleanup });
       connections.add(connection);
       ownedConnections.add(connection);
       void connection.process.exited.finally(() => connections.delete(connection));
@@ -94,10 +95,23 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     },
   });
   pi.registerCommand("antigravity-acp", {
-    description: "Inspect ACP status/tools/usage/context, configure budgets, toggle debug, refresh models or set tool policies",
+    description: "Inspect ACP status/tools/usage/context/cleanup, configure budgets, toggle debug, refresh models or set tool policies",
     async handler(args: string, ctx: any) {
       const parts = args.trim().split(/\s+/);
       const [command, value] = parts;
+      if (command === "cleanup") {
+        if (value) {
+          if (!["off", "conservative", "timeout"].includes(value) || parts.length > 3 || (parts[2] !== undefined && value !== "timeout")) {
+            throw new Error("Usage: /antigravity-acp cleanup [off|conservative|timeout [DAYS]]");
+          }
+          cleanup.configure(value, parts[2] === undefined ? undefined : Number(parts[2]));
+          cleanup.start();
+        }
+        const removed = cleanup.collect();
+        ctx.ui.notify(JSON.stringify({ ...cleanup.status(), removed,
+          note: "Active sessions are protected. Timeout cleanup loses ACP-only state; OMP history is retained." }, null, 2), "info");
+        return;
+      }
       if (command === "context") {
         if (value === "set") {
           const [, , target, key, raw] = parts;
@@ -193,10 +207,12 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   }
   async function discoverModels() {
     await prepareRuntime();
-    const connection = new TierConnection({ cwd: process.cwd() });
+    const connection = new TierConnection({ cwd: process.cwd(), ompCleanup: cleanup });
+    let discoveredSession: string | undefined;
     try {
       await connection.initialize();
       const session = await connection.newSession(process.cwd());
+      discoveredSession = session.sessionId;
       const modern = choices(selector(session, "model"));
       if (modern.length) {
         const models = [];
@@ -212,6 +228,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       if (!models.length) throw new Error("Antigravity did not advertise any models");
       return models;
     } finally {
+      if (discoveredSession) connection.discardSession(discoveredSession);
       await connection.close();
     }
   }

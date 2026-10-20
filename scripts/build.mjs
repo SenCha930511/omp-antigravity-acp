@@ -23,6 +23,7 @@ const result = await build({
     contents: [
       ...exports.map(([names, file]) => `export { ${names} } from ${JSON.stringify(path.join(upstream, "src", file))};`),
       `export { TierConnection } from ${JSON.stringify(path.join(root, "extension/tier-connection.ts"))};`,
+      `export { SessionCleanup } from ${JSON.stringify(path.join(root, "extension/session-cleanup.ts"))};`,
       'export { Type } from "typebox";',
     ].join("\n"),
     resolveDir: root,
@@ -59,8 +60,13 @@ const result = await build({
         if (source.split(marker).length !== 2) throw new Error("Pinned upstream context seam changed; review compatibility");
         const retirement = "if (!persistent) await this.dropBinding(key, binding);";
         if (source.split(retirement).length !== 2) throw new Error("Pinned upstream connection retirement seam changed; review compatibility");
+        const cleanupRetire = "const current = this.bindings.get(key);\n\t\tif (current && (await current) === binding";
+        const cleanupConfirm = "this.persistBinding(binding);\n\t\t\tswitch (response.stopReason)";
+        for (const seam of [cleanupRetire, cleanupConfirm]) if (source.split(seam).length !== 2) throw new Error("Pinned upstream cleanup seam changed; review compatibility");
         return { contents: source.replace(marker, "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })")
-          .replace(retirement, "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);"), loader: "ts" };
+          .replace(retirement, "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);")
+          .replace(cleanupRetire, "if (removeSaved) binding.connection.retireForReplacement?.(key, binding.session.sessionId);\n\t\t" + cleanupRetire)
+          .replace(cleanupConfirm, "this.persistBinding(binding);\n\t\t\tif (response.stopReason === 'end_turn') { binding.connection.confirmReplacement?.(key, binding.session.sessionId); if (!persistent) binding.connection.discardSession?.(binding.session.sessionId); }\n\t\t\tswitch (response.stopReason)"), loader: "ts" };
       });
       builder.onLoad({ filter: /\/(?:process|runtime-manifest)\.ts$/ }, async ({ path: file }) => {
         const relative = path.relative(upstream, file).split(path.sep).join("/");

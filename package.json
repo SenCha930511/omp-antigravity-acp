@@ -1,6 +1,6 @@
 {
   "name": "omp-antigravity-acp-provider",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Google Antigravity ACP provider for Oh My Pi (OMP), with tool bridging and per-model thinking; derived from zacbemis/pi-antigravity-acp-provider",
   "type": "module",
   "license": "MIT",
@@ -40,13 +40,15 @@
     "test:marketplace": "node scripts/test-marketplace.mjs",
     "test:commands": "bun scripts/test-tool-command.ts",
     "test:usage": "bun scripts/test-usage-command.ts",
-    "check": "npm run build && npm test",
+    "test:cleanup": "node scripts/test-cleanup-runtime.ts",
+    "check": "npm run build && npm test && npm run test:cleanup",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.3.0",
     "pi-antigravity-acp-provider": "0.1.15",
+    "proper-lockfile": "4.1.2",
     "typebox": "1.3.36"
   },
   "devDependencies": {

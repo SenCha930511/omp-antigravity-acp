@@ -5,6 +5,7 @@ import { choices, resolveSelection, selector } from "./selectors.ts";
 import { installSessionRouting, type NativeToolMode } from "./tool-routing.ts";
 import { showAcpUpdate } from "./activity-presentation.ts";
 import { parseSessionUsage, usageDelta, type SessionUsage } from "./usage-accounting.ts";
+import type { SessionCleanup } from "./session-cleanup.ts";
 
 export class TierConnection extends AntigravityAcpConnection {
   confirmedThinking: { model: string; effort: string } | undefined;
@@ -18,10 +19,15 @@ export class TierConnection extends AntigravityAcpConnection {
   private readonly usageBaselines = new Map<string, SessionUsage>();
   private usageCapture: { text: string } | undefined;
   private readonly usageCommands = new Set<string>();
+  private cleanup?: SessionCleanup;
+  private cleanupLeases = new Map<string, string>();
   toolRouting: { nativeTools: NativeToolMode; channel: "pending" | "system-append" | "legacy-prompt" } | undefined;
 
-  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean; ompUsageMode?: "auto" | "off" }) {
+  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean; ompUsageMode?: "auto" | "off"; ompCleanup?: SessionCleanup }) {
     super(options);
+    this.cleanup = options.ompCleanup;
+    this.cleanup?.start();
+    void this.process.exited.then(() => this.releaseCleanupLeases());
     this.debugToolUpdates = options.ompDebugToolUpdates ?? false;
     this.usageMode = options.ompUsageMode ?? "auto";
     this.setHandlers({ ...options.handlers, onUpdate: async notification => {
@@ -54,8 +60,48 @@ export class TierConnection extends AntigravityAcpConnection {
 
   override async newSession(...args: Parameters<AntigravityAcpConnection["newSession"]>) {
     const session = await super.newSession(...args);
+    if (this.cleanup) {
+      try { this.cleanupLeases.set(session.sessionId, this.cleanup.acquire(session.sessionId, true, this.process.pid!)); }
+      catch { console.warn("[ACP cleanup] Could not register new session; preserving its files."); }
+    }
     this.usageBaselines.set(session.sessionId, { input: 0, completion: 0, thinking: 0, cached: 0, total: 0 });
     return session;
+  }
+
+  private protectSession(id: string) {
+    if (this.cleanup && !this.cleanupLeases.has(id)) {
+      // Lease before the resume/load RPC, including while the server replays.
+      this.cleanupLeases.set(id, this.cleanup.acquire(id, false, this.process.pid!));
+    }
+  }
+  override async resumeSession(...args: Parameters<AntigravityAcpConnection["resumeSession"]>) {
+    this.protectSession(args[0]);
+    return super.resumeSession(...args);
+  }
+  override async loadSession(...args: Parameters<AntigravityAcpConnection["loadSession"]>) {
+    this.protectSession(args[0]);
+    return super.loadSession(...args);
+  }
+  retireForReplacement(key: string, id: string) {
+    try { this.cleanup?.retire(key, id); } catch { /* Preserve files if bookkeeping is unavailable. */ }
+  }
+  confirmReplacement(key: string, id: string) {
+    try { this.cleanup?.confirm(key, id); } catch { /* Retry cleanup on a later successful turn. */ }
+  }
+  discardSession(id: string) {
+    // Explicitly disposable discovery sessions need no model replacement.
+    this.retireForReplacement(`discovery:${id}`, id);
+    this.confirmReplacement(`discovery:${id}`, "discovery-complete");
+  }
+  private releaseCleanupLeases() {
+    if (this.process.alive) return;
+    for (const [id, token] of this.cleanupLeases ?? []) {
+      try { this.cleanup?.release(token); this.cleanupLeases.delete(id); } catch { /* Live PID leases fail closed. */ }
+    }
+  }
+  override async close() {
+    await super.close();
+    this.releaseCleanupLeases();
   }
 
   private async readUsage(sessionId: string, signal?: AbortSignal) {
@@ -74,6 +120,7 @@ export class TierConnection extends AntigravityAcpConnection {
   override async prompt(request: Parameters<AntigravityAcpConnection["prompt"]>[0], signal?: AbortSignal) {
     this.activePrompts++;
     const id = request.sessionId;
+    try { this.cleanup?.touch(id); } catch { /* Cleanup must not affect inference. */ }
     try {
       const queryUsage = process.env.OMP_ACP_USAGE !== "off" && this.usageMode !== "off" && this.usageCommands.has(id);
       if (queryUsage && !this.usageBaselines.has(id)) {
@@ -104,7 +151,10 @@ export class TierConnection extends AntigravityAcpConnection {
         this.usageStatus.set(id, { source: "unavailable", cache: "unknown", error: "Official usage query failed or timed out" });
         return withContext(response);
       }
-    } finally { this.activePrompts--; }
+    } finally {
+      this.activePrompts--;
+      try { this.cleanup?.touch(id); } catch { /* Keep accounting optional. */ }
+    }
   }
 
   override async setModel(sessionId: string, modelId: string, signal?: AbortSignal): Promise<void> {

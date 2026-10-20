@@ -19,6 +19,7 @@ try {
     platform: "node",
     format: "esm",
     target: "node22",
+    banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
     logLevel: "warning",
   });
   const compiled = (await readdir(output)).filter(file => file.endsWith(".mjs"));

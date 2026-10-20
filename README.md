@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.8 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.9 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -56,7 +56,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.8** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.9** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -80,7 +80,7 @@ omp plugin install npm:omp-antigravity-acp-provider
 To pin a specific release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp-provider@0.1.8
+omp plugin install npm:omp-antigravity-acp-provider@0.1.9
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
@@ -154,6 +154,10 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 | `/antigravity-acp context` | Show saved settings and effective per-model budgets |
 | `/antigravity-acp context set default KEY NUMBER` | Set a default token or payload setting |
 | `/antigravity-acp context set MODEL KEY NUMBER` | Override one advertised model ID |
+| `/antigravity-acp cleanup` | Show cleanup mode/deadline and check eligible local sessions |
+| `/antigravity-acp cleanup off` | Disable automatic session-file deletion |
+| `/antigravity-acp cleanup conservative` | Delete confirmed replaced/disposable sessions only (default) |
+| `/antigravity-acp cleanup timeout DAYS` | Also delete inactive owned sessions after DAYS (default 7) |
 | `/antigravity-acp tools` | Available and omitted OMP tool schemas after a request |
 | `/antigravity-acp refresh` | Explicit network discovery and local catalog refresh |
 | `/antigravity-acp native-tools prefer` | Prefer OMP tools; retain native built-ins (default) |
@@ -233,6 +237,37 @@ omp config set compaction.modelThresholds '{"antigravity-acp/*":"85%"}'
 Merge that map with existing model-specific entries before running the command. At the example 524,288-token window, 85% triggers at 445,644 tokens, below the automatic transfer estimate budget of 475,904 tokens. OMP can also recover from local context/payload overflow errors. Google independently controls its internal agent summaries. Plugin installation does not automatically change OMP's global compaction configuration.
 
 Active sessions are reused. After five idle minutes, the adapter closes its ACP runtime, bridge and child processes; the next request tries to restore the saved server session. Active streams, outstanding ACP prompts, tools and permission waits prevent eviction. No background model prewarming, quota polling or tokenizer model download is performed.
+
+### Local ACP session cleanup
+
+Session-file deletion is separate from the five-minute idle process shutdown. Configure one of three modes:
+
+| Mode | Behavior |
+| --- | --- |
+| `off` | Keep session files, including replaced sessions. Ownership/lease bookkeeping remains enabled so cleanup can be enabled later. |
+| `conservative` (default) | Remove an old session after its OMP history is rebuilt (for example after `/compact`), a replacement successfully completes a turn, and all registered users of the old session have released it. Disposable model-discovery sessions are also removed after their connection exits. Ordinary shutdown and idle eviction preserve resumable sessions. |
+| `timeout` | Conservative cleanup plus removal of owned sessions whose last activity exceeds `idleDays`. Default 7 days; accepts fractional days (for example `0.5` for 12 hours), with a minimum of one hour and a maximum of 3650 days. Live leases always override the deadline. |
+
+```text
+/antigravity-acp cleanup
+/antigravity-acp cleanup off
+/antigravity-acp cleanup conservative
+/antigravity-acp cleanup timeout 7
+```
+
+Settings persist in `~/.omp/agent/antigravity-acp-provider/cleanup.json`:
+
+```json
+{ "mode": "conservative", "idleDays": 7 }
+```
+
+Commands take effect immediately; direct file edits are read on the next cleanup check. Checks run when the cleanup service starts, after replacement/release, on the inspection command, and every 15 minutes while the service is running. OMP must be running for timed checks; the deadline is not an exact scheduled deletion time. No additional model requests, tokenizer downloads or background worker processes are used.
+
+Only sessions created and registered by this adapter version onward are eligible. Pre-existing/unidentified ACP sessions are preserved. The registry is separated by the resolved ACP storage root, and tracks both OMP and ACP supervisor PIDs across participating processes. Resume/load acquires a lease before replay. Busy/corrupt registries and unsafe paths defer deletion. Restart older OMP instances when upgrading: clients that do not implement these leases, or external clients manually opening the same session, are outside this coordination mechanism.
+
+Cleanup targets only the registered UUID's `.db`, SQLite journal/WAL/SHM files, `.meta`, and `brain/<UUID>` directory under the ACP storage root (normally `~/.gemini/antigravity-acp/`; respects `GEMINI_HOME`). Symlinked targets are preserved. Credentials, global settings, shared artifacts, workspace files and OMP's own conversation history are untouched. Local deletion is permanent and does not request deletion of Google's server-side logs. The current official ACP runtime does not advertise session deletion, so this uses the inspected local layout rather than an unsupported RPC.
+
+Timeout cleanup sacrifices ACP-only reasoning/checkpoint state. The next request reconstructs a session from OMP's retained history and can incur replay latency and a different token count. Cache expiry is not assumed or guaranteed. Conservative mode avoids that tradeoff for ordinary resumable sessions; it does not bound the number of unrelated OMP conversations you keep.
 
 Optional environment settings, applied when OMP starts:
 

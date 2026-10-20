@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9 — 2026-10-20
+
+- Add persistent `off`, `conservative` (default) and `timeout` ACP session-cleanup modes with a configurable idle deadline.
+- Delete only adapter-owned local session databases, SQLite sidecars, metadata and per-session brain artifacts; never adopt unidentified pre-existing sessions.
+- Conservative cleanup waits for a successful replacement turn and release of all participating OMP/ACP process leases. Discovery sessions are explicitly disposable.
+- Keep normal shutdown/idle restoration intact; add cross-process locking, path/symlink guards and failure-safe retries.
+- Add filesystem, policy-command and built-runtime reconstruction regressions without Google inference.
+
 ## 0.1.8 — 2026-10-20
 
 - Separate estimated token budgets from wire payload and image size limits; remove the erroneous context-window-to-byte clamp.
