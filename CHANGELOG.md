@@ -4,7 +4,7 @@
 
 - Rename the project, npm package and marketplace plugin to `omp-antigravity-acp-provider`.
 - Preserve the `antigravity-acp` provider ID, commands, configuration and session paths.
-- Retain upstream fork attribution and document migration from the former name.
+- Retain upstream fork attribution.
 
 ## 0.1.5 — 2026-10-20
 
