@@ -2,9 +2,21 @@
 // OMP effort -> upstream advertised legacy ID -> official model/thought selectors.
 import { AntigravityAcpConnection } from "pi-antigravity-acp-provider/src/acp/connection.ts";
 import { choices, resolveSelection, selector } from "./selectors.ts";
+import { installSessionRouting, type NativeToolMode } from "./tool-routing.ts";
 
 export class TierConnection extends AntigravityAcpConnection {
   confirmedThinking: { model: string; effort: string } | undefined;
+  toolRouting: { nativeTools: NativeToolMode; channel: "pending" | "system-append" | "legacy-prompt" } | undefined;
+
+  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode }) {
+    super(options);
+    if (options.ompNativeTools) {
+      this.toolRouting = { nativeTools: options.ompNativeTools, channel: "pending" };
+      installSessionRouting((this as any).connection, this.initialized, options.ompNativeTools, advanced => {
+        this.toolRouting!.channel = advanced ? "system-append" : "legacy-prompt";
+      });
+    }
+  }
 
   override async setModel(sessionId: string, modelId: string, signal?: AbortSignal): Promise<void> {
     const { modelId: base, effort } = resolveSelection(this.getSessionState(sessionId), modelId);

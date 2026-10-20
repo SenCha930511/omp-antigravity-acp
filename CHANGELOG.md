@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 — 2026-10-20
+
+- Append OMP tool-routing instructions to the official ACP system prompt and eagerly load pi-bridge tools on supported runtimes.
+- Add `/antigravity-acp native-tools prefer|disabled` with an independent OMP policy file. Default to prefer; disabled mode filters native built-ins and fails closed on incompatible runtimes.
+- Apply session metadata to new/load/resume, preserving routing after model changes and clearing persisted native-tool filters when returning to prefer mode.
+- Add offline routing/policy regressions, explicit live metadata/restoration probes, and research reports distinguishing absent server thought output from client display behavior.
+
 ## 0.1.3 — 2026-10-20
 
 - Add npm ecosystem/resource keywords used by zmarketplace to discover OMP extensions.

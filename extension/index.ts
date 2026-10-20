@@ -8,18 +8,11 @@ import { officialApiCost, applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
 import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model-catalog.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
+import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
+import { loadNativeToolMode, saveNativeToolMode } from "./tool-policy.ts";
 import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
-const TOOL_ROUTING = `
-OMP tool routing:
-The supplied OMP tools are exposed by the authenticated pi-bridge MCP server with pi_ prefixes.
-For workspace reads, searches, edits, command execution, and other user tasks, choose an appropriate supplied pi_ MCP tool before considering an Antigravity-native tool. Their results return through the OMP tool loop.
-You may use Antigravity's normal MCP discovery mechanism to inspect the pi-bridge tool manifests. Do not search unrelated directories or configuration files to locate MCP tools.
-If an OMP tool fails, inspect the error and correct its arguments when appropriate. Do not switch to a native tool merely because the OMP call failed.
-If no suitable OMP tool is available, explain the missing capability. Before substituting an Antigravity-native tool for a user task, state the proposed tool and reason and obtain the user's explicit approval. Without approval, stop that operation and report the limitation.
-This exception does not require approval for normal pi-bridge MCP manifest discovery; it applies to performing the user's task with native tools.
-`;
 
 function authReady() {
   if (hasAntigravityAuth()) return true;
@@ -32,9 +25,14 @@ function authReady() {
 }
 
 export default async function (pi: any) {
-  const stateDir = path.join(os.homedir(), ".omp/agent/antigravity-acp-provider");
+  return registerOmpAdapter(pi, path.join(os.homedir(), ".omp/agent/antigravity-acp-provider"));
+}
+
+// Explicit state injection keeps command integration tests away from user data.
+export async function registerOmpAdapter(pi: any, stateDir: string) {
   const configPath = path.join(stateDir, "config.json");
   const cachePath = path.join(stateDir, "models-cache.json");
+  const toolPolicyPath = path.join(stateDir, "omp-tools.json");
   // Loading this global extension must not start ACP or query Google.
   let readiness: Promise<void> | undefined;
   function prepareRuntime() {
@@ -48,7 +46,7 @@ export default async function (pi: any) {
   let lastToolAudit: { offered: string[]; available: string[]; omitted: any[] } | undefined;
   const runtimes = new SessionRuntimePool(() => {
     const runtime = new AntigravityRuntime((options: any) => {
-      const connection = new TierConnection(options);
+      const connection = new TierConnection({ ...options, ompNativeTools: loadNativeToolMode(toolPolicyPath) });
       connections.add(connection);
       void connection.process.exited.finally(() => connections.delete(connection));
       return connection;
@@ -82,10 +80,17 @@ export default async function (pi: any) {
     },
   });
   pi.registerCommand("antigravity-acp", {
-    description: "Inspect ACP status/tools, refresh cached models, or set permissions (default|auto-edit|yolo)",
+    description: "Inspect ACP status/tools, refresh models, set native-tools (prefer|disabled), or permissions",
     async handler(args: string, ctx: any) {
-      const { runtime } = runtimes.get(sessionIdOf(ctx));
       const [command, value] = args.trim().split(/\s+/);
+      if (command === "native-tools") {
+        const mode = parseNativeToolMode(value);
+        await runtimes.closeAll();
+        saveNativeToolMode(toolPolicyPath, mode);
+        ctx.ui.notify(`Native tools: ${mode}. ACP connections will be recreated on the next request with the new policy.`, "info");
+        return;
+      }
+      const { runtime } = runtimes.get(sessionIdOf(ctx));
       if (command === "refresh") {
         initialModels = await refreshCatalog();
         adapted.registerProvider();
@@ -104,7 +109,7 @@ export default async function (pi: any) {
           : "No model request yet. Send a message with this ACP model to inspect its offered OMP tools.", "info");
         return;
       }
-      ctx.ui.notify(`Antigravity ACP (OMP adapter)\nAuth storage: ${authReady() ? "configured (ACP-owned token file or macOS keychain)" : inspectAntigravityAuth().status}\nPermissions: ${snapshot.permissionMode}\nActive sessions: ${snapshot.bindings}\nConfirmed thinking: ${JSON.stringify([...connections].map(connection => connection.confirmedThinking).filter(Boolean))}\nUsage: ${JSON.stringify(snapshot.metrics)}\n${JSON.stringify(snapshot.processes)}`, "info");
+      ctx.ui.notify(`Antigravity ACP (OMP adapter)\nAuth storage: ${authReady() ? "configured (ACP-owned token file or macOS keychain)" : inspectAntigravityAuth().status}\nPermissions: ${snapshot.permissionMode}\nNative tools: ${loadNativeToolMode(toolPolicyPath)}\nTool routing: ${JSON.stringify([...connections].map(connection => connection.toolRouting).filter(Boolean))}\nActive sessions: ${snapshot.bindings}\nConfirmed thinking: ${JSON.stringify([...connections].map(connection => connection.confirmedThinking).filter(Boolean))}\nUsage: ${JSON.stringify(snapshot.metrics)}\n${JSON.stringify(snapshot.processes)}`, "info");
     },
   });
   const upstreamModels = new Map<string, any>();

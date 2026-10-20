@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.3 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.2, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.4 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -28,7 +28,8 @@ Google's consumer-plan policies can restrict third-party agent access even throu
 - All server-advertised model IDs, without a Gemini-only whitelist. Claude, GPT-OSS or future models become available when the ACP endpoint advertises them for your account.
 - Per-model, server-confirmed thinking selection. OMP efforts `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max` are exposed only when advertised; models without these choices use the server default.
 - Compatible OMP tools exposed through an authenticated loopback MCP bridge.
-- Provider-specific instructions prefer OMP tools and require approval before substituting native Antigravity tools. These instructions are not a hard tool-disable mechanism.
+- Provider-specific instructions prefer OMP tools and require approval before substituting native Antigravity tools. Supported runtimes receive these instructions through the official system-append extension and eagerly register the pi-bridge tools.
+- Optional native built-in tool filtering; default `prefer` mode keeps native tools available, while `disabled` mode removes native built-ins for this adapter's ACP sessions.
 - Lazy ACP startup; model selection and cached listing do not launch the server.
 - Runtimes scoped to OMP sessions, including recovery after a planning session is disposed.
 - OAuth credentials owned by Antigravity; OMP stores only a non-secret marker.
@@ -54,7 +55,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.3** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.4** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -146,17 +147,32 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 | `/antigravity-acp status` | Runtime, confirmed thinking and usage information |
 | `/antigravity-acp tools` | Available and omitted OMP tool schemas after a request |
 | `/antigravity-acp refresh` | Explicit network discovery and local catalog refresh |
+| `/antigravity-acp native-tools prefer` | Prefer OMP tools; retain native built-ins (default) |
+| `/antigravity-acp native-tools disabled` | Disable native built-ins for this adapter's ACP sessions |
 | `/antigravity-acp permissions default` | Prompting permission mode |
 | `/antigravity-acp permissions auto-edit` | Auto-edit mode |
 | `/antigravity-acp permissions yolo` | Upstream permissive mode |
 
 The initial permission mode follows upstream configuration, whose default is `yolo`. Native Antigravity tools have separate execution permissions from OMP tools.
 
+## OMP tool routing and native-tool mode
+
+By default, `prefer` mode sends the OMP-first instruction through `_meta.antigravity.systemPrompt.append` and preloads the `pi-bridge` tools with `eagerMcpServers`. These are official runtime extension fields on session new/load/resume, not model API requests. The adapter preserves conversation-level instructions as well. Prompt preference can still be ignored by a model; it does not enforce a tool allowlist.
+
+Eager loading supplies tool schemas up front, which can increase initial prompt size compared with lazy discovery.
+
+For strict native built-in filtering, run `/antigravity-acp native-tools disabled`. This sets `enabledTools: []` in the session extension while retaining the OMP MCP bridge. Run `/antigravity-acp native-tools prefer` to restore native tool availability. The command closes this process's ACP runtimes; the next request recreates/restores them with the selected policy. Switching back explicitly clears the saved server filter, including on restored sessions.
+
+The setting is stored separately in `~/.omp/agent/antigravity-acp-provider/omp-tools.json` as `{"nativeTools":"prefer"}` or `{"nativeTools":"disabled"}`. It applies to this adapter and does not configure other providers. Other already-running OMP processes need to restart to pick up a change. Native filtering does not remove separately configured global MCP servers and is not a filesystem sandbox. Unsupported or omitted OMP tool schemas remain unavailable; disabled mode cannot substitute native tools for them.
+
+Advanced routing requires the official `antigravity-acp` 1.x server, version 1.4.1 or newer, advertising system-append support in its agent capabilities. On an incompatible server, `prefer` falls back to the conversation-level prompt; `disabled` rejects session creation/restoration rather than silently allowing native tools. `/antigravity-acp status` shows the selected mode and whether active connections use system append or the legacy prompt channel. Live behavior has been verified on server 1.4.1.
+
 ## Data locations
 
 | Data | Location |
 | --- | --- |
 | Adapter configuration, catalog and session mappings | `~/.omp/agent/antigravity-acp-provider/` |
+| OMP-specific native-tool policy | `~/.omp/agent/antigravity-acp-provider/omp-tools.json` |
 | Official credentials/settings/history | Managed by Antigravity under its own storage/keychain |
 | Downloaded official runtime | `~/.local/opt/agy-acp/` |
 | Generated adapter bundle | `extension/runtime.mjs` |
@@ -183,6 +199,10 @@ Never include those user data directories, OAuth callback URLs, account identifi
 `npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
 
 `npm run test:marketplace` exercises catalog discovery, installation, automatic provider loading, offline cache reuse and uninstallation in a temporary named OMP profile. It downloads the published adapter and cleans the entire test profile afterward. Add `-- --remote` after publishing catalog changes to test the GitHub source instead of the local working tree. No model inference is performed.
+
+`bun scripts/verify-session-routing-live.ts --live` tests synthetic read/edit/command tool round trips, cold ACP session restoration, model changes, and both directions of native-tool mode switching. It consumes quota and creates server history, but does not execute real commands or edit workspace files. Temporary client session mappings are removed afterward.
+
+`npm run test:commands` requires Bun and exercises command persistence and validation offline with an explicitly isolated state directory. The 0.1.4 live routing check passed both `prefer → disabled` and `disabled → prefer` on cold session resume, including an Argon-to-Flash model change; all observed task tools were `pi_read`, `pi_edit` and `pi_bash`.
 
 For an explicit live check of outgoing tool-priority instructions, incoming thought events and a synthetic OMP tool round trip, use `bun scripts/diagnose-observability.ts --live --installed` from this source checkout. It consumes quota and creates ACP sessions. See the [2026-10-20 verification report](docs/observability-check-2026-10-20.md), including the corrected diagnosis of an isolated prompt-precedence test.
 
