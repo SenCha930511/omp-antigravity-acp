@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 — 2026-10-20
+
+- Hide duplicate ACP tool-status lines by default; `/antigravity-acp debug on|off` controls their display immediately without recreating the connection.
+- Preserve normal OMP tool calls/results, real thought events, plans and SDK progress watchdog updates.
+- Persist the debug option independently of native-tool filtering and retain existing 0.1.4 policy files.
+- Add presentation, settings and live same-session debug-toggle checks.
+
 ## 0.1.4 — 2026-10-20
 
 - Append OMP tool-routing instructions to the official ACP system prompt and eagerly load pi-bridge tools on supported runtimes.

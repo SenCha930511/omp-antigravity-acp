@@ -18,7 +18,7 @@ const report: any = { installedVersion: version, metadataSent: false, rawEvents:
 const marker = "SYSTEM_APPEND_ONLY_6D49";
 const runtime = new AntigravityRuntime((options: any) => {
   const handlers = options.handlers;
-  const connection = new TierConnection({ ...options, handlers: { ...handlers,
+  const connection = new TierConnection({ ...options, ompDebugToolUpdates: true, handlers: { ...handlers,
     onUpdate: async (notification: any) => {
       const update = notification.update;
       report.rawEvents[update.sessionUpdate] = (report.rawEvents[update.sessionUpdate] ?? 0) + 1;

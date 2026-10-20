@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.4 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.5 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -30,6 +30,7 @@ Google's consumer-plan policies can restrict third-party agent access even throu
 - Compatible OMP tools exposed through an authenticated loopback MCP bridge.
 - Provider-specific instructions prefer OMP tools and require approval before substituting native Antigravity tools. Supported runtimes receive these instructions through the official system-append extension and eagerly register the pi-bridge tools.
 - Optional native built-in tool filtering; default `prefer` mode keeps native tools available, while `disabled` mode removes native built-ins for this adapter's ACP sessions.
+- Duplicate gray ACP tool-status lines are hidden by default, with an optional debug display switch. OMP tool calls/results and actual thought summaries remain visible.
 - Lazy ACP startup; model selection and cached listing do not launch the server.
 - Runtimes scoped to OMP sessions, including recovery after a planning session is disposed.
 - OAuth credentials owned by Antigravity; OMP stores only a non-secret marker.
@@ -55,7 +56,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.4** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.5** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -149,11 +150,15 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 | `/antigravity-acp refresh` | Explicit network discovery and local catalog refresh |
 | `/antigravity-acp native-tools prefer` | Prefer OMP tools; retain native built-ins (default) |
 | `/antigravity-acp native-tools disabled` | Disable native built-ins for this adapter's ACP sessions |
+| `/antigravity-acp debug on` | Show ACP tool-status lines for debugging |
+| `/antigravity-acp debug off` | Hide ACP tool-status lines (default) |
 | `/antigravity-acp permissions default` | Prompting permission mode |
 | `/antigravity-acp permissions auto-edit` | Auto-edit mode |
 | `/antigravity-acp permissions yolo` | Upstream permissive mode |
 
 The initial permission mode follows upstream configuration, whose default is `yolo`. Native Antigravity tools have separate execution permissions from OMP tools.
+
+The debug switch controls gray `[Antigravity tool: …]` and `[Antigravity tool update: …]` lines. It defaults to off and applies immediately to this process's active ACP connections. Normal OMP tool displays/results, real thought chunks and plan messages are preserved. The option is saved as `debugToolUpdates` in `omp-tools.json` alongside `nativeTools`; toggling either option preserves the other. Existing policy files without the debug field default to off. Other OMP processes need a restart to read a setting changed elsewhere. `OMP_ACP_TRACE=1` is a separate, opt-in terminal diagnostic setting.
 
 ## OMP tool routing and native-tool mode
 
@@ -184,7 +189,7 @@ Never include those user data directories, OAuth callback URLs, account identifi
 - Argon/Flash retain client metadata of 1,000,000 context tokens and 65,536 output tokens. Other models use conservative defaults of 32,768 context tokens and 8,192 output tokens because the model selector does not supply these limits. These are client metadata, not verified server limits or controls over Antigravity's internal compaction.
 - API background execution and long decode controls are not exposed.
 - The bridge advertises text and image input, not the full Gemini API media surface.
-- Thought summaries appear only if the ACP server emits them. A verified Argon High request returned no `agent_thought_chunk`; tool/plan progress can appear in OMP's thinking area.
+- Thought summaries appear only if the ACP server emits them. A verified Argon High request returned no `agent_thought_chunk`; plan progress and optional debug tool-status lines can appear in OMP's thinking area.
 - Cached-token usage appears only when ACP reports it. Missing counts are not proof that backend caching was disabled.
 - The prompt inactivity watchdog is 10 minutes without progress, or 60 minutes while tools/permissions are outstanding.
 - Argon estimates use the undiscounted list price: $4 input, $20 output and $0.20 cached input per million tokens. Flash estimates use the announced date-dependent rates. These are snapshots, not live pricing discovery.
@@ -203,6 +208,8 @@ Never include those user data directories, OAuth callback URLs, account identifi
 `bun scripts/verify-session-routing-live.ts --live` tests synthetic read/edit/command tool round trips, cold ACP session restoration, model changes, and both directions of native-tool mode switching. It consumes quota and creates server history, but does not execute real commands or edit workspace files. Temporary client session mappings are removed afterward.
 
 `npm run test:commands` requires Bun and exercises command persistence and validation offline with an explicitly isolated state directory. The 0.1.4 live routing check passed both `prefer → disabled` and `disabled → prefer` on cold session resume, including an Argon-to-Flash model change; all observed task tools were `pi_read`, `pi_edit` and `pi_bash`.
+
+`bun scripts/verify-debug-live.ts --live` explicitly tests default-off, on and off again on the same ACP session, using an isolated policy and a synthetic read tool. It checks that tool calls/results and a clearly marked synthetic thought event still reach OMP while debug status visibility follows the switch. It consumes quota and creates server history.
 
 For an explicit live check of outgoing tool-priority instructions, incoming thought events and a synthetic OMP tool round trip, use `bun scripts/diagnose-observability.ts --live --installed` from this source checkout. It consumes quota and creates ACP sessions. See the [2026-10-20 verification report](docs/observability-check-2026-10-20.md), including the corrected diagnosis of an isolated prompt-precedence test.
 

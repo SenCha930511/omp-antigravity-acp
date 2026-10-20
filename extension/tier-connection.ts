@@ -3,13 +3,19 @@
 import { AntigravityAcpConnection } from "pi-antigravity-acp-provider/src/acp/connection.ts";
 import { choices, resolveSelection, selector } from "./selectors.ts";
 import { installSessionRouting, type NativeToolMode } from "./tool-routing.ts";
+import { showAcpUpdate } from "./activity-presentation.ts";
 
 export class TierConnection extends AntigravityAcpConnection {
   confirmedThinking: { model: string; effort: string } | undefined;
+  debugToolUpdates: boolean;
   toolRouting: { nativeTools: NativeToolMode; channel: "pending" | "system-append" | "legacy-prompt" } | undefined;
 
-  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode }) {
+  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean }) {
     super(options);
+    this.debugToolUpdates = options.ompDebugToolUpdates ?? false;
+    this.setHandlers({ ...options.handlers, onUpdate: async notification => {
+      if (showAcpUpdate(notification, this.debugToolUpdates)) await options.handlers?.onUpdate?.(notification);
+    } });
     if (options.ompNativeTools) {
       this.toolRouting = { nativeTools: options.ompNativeTools, channel: "pending" };
       installSessionRouting((this as any).connection, this.initialized, options.ompNativeTools, advanced => {

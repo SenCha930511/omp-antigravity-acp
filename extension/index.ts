@@ -9,7 +9,7 @@ import { SessionRuntimePool } from "./runtime-pool.ts";
 import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model-catalog.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
-import { loadNativeToolMode, saveNativeToolMode } from "./tool-policy.ts";
+import { loadNativeToolMode, loadToolPolicy, saveNativeToolMode, saveDebugToolUpdates } from "./tool-policy.ts";
 import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
@@ -46,7 +46,8 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   let lastToolAudit: { offered: string[]; available: string[]; omitted: any[] } | undefined;
   const runtimes = new SessionRuntimePool(() => {
     const runtime = new AntigravityRuntime((options: any) => {
-      const connection = new TierConnection({ ...options, ompNativeTools: loadNativeToolMode(toolPolicyPath) });
+      const policy = loadToolPolicy(toolPolicyPath);
+      const connection = new TierConnection({ ...options, ompNativeTools: policy.nativeTools, ompDebugToolUpdates: policy.debugToolUpdates });
       connections.add(connection);
       void connection.process.exited.finally(() => connections.delete(connection));
       return connection;
@@ -80,9 +81,17 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     },
   });
   pi.registerCommand("antigravity-acp", {
-    description: "Inspect ACP status/tools, refresh models, set native-tools (prefer|disabled), or permissions",
+    description: "Inspect ACP status/tools, toggle debug (on|off), refresh models, set native-tools or permissions",
     async handler(args: string, ctx: any) {
       const [command, value] = args.trim().split(/\s+/);
+      if (command === "debug") {
+        if (value !== "on" && value !== "off") throw new Error("Usage: /antigravity-acp debug on|off");
+        const enabled = value === "on";
+        saveDebugToolUpdates(toolPolicyPath, enabled);
+        for (const connection of connections) connection.debugToolUpdates = enabled;
+        ctx.ui.notify(`ACP tool-status debug display: ${value}. Normal OMP tool results and thought summaries are preserved.`, "info");
+        return;
+      }
       if (command === "native-tools") {
         const mode = parseNativeToolMode(value);
         await runtimes.closeAll();
@@ -109,7 +118,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           : "No model request yet. Send a message with this ACP model to inspect its offered OMP tools.", "info");
         return;
       }
-      ctx.ui.notify(`Antigravity ACP (OMP adapter)\nAuth storage: ${authReady() ? "configured (ACP-owned token file or macOS keychain)" : inspectAntigravityAuth().status}\nPermissions: ${snapshot.permissionMode}\nNative tools: ${loadNativeToolMode(toolPolicyPath)}\nTool routing: ${JSON.stringify([...connections].map(connection => connection.toolRouting).filter(Boolean))}\nActive sessions: ${snapshot.bindings}\nConfirmed thinking: ${JSON.stringify([...connections].map(connection => connection.confirmedThinking).filter(Boolean))}\nUsage: ${JSON.stringify(snapshot.metrics)}\n${JSON.stringify(snapshot.processes)}`, "info");
+      ctx.ui.notify(`Antigravity ACP (OMP adapter)\nAuth storage: ${authReady() ? "configured (ACP-owned token file or macOS keychain)" : inspectAntigravityAuth().status}\nPermissions: ${snapshot.permissionMode}\nNative tools: ${loadNativeToolMode(toolPolicyPath)}\nDebug tool updates: ${loadToolPolicy(toolPolicyPath).debugToolUpdates ? "on" : "off"}\nTool routing: ${JSON.stringify([...connections].map(connection => connection.toolRouting).filter(Boolean))}\nActive sessions: ${snapshot.bindings}\nConfirmed thinking: ${JSON.stringify([...connections].map(connection => connection.confirmedThinking).filter(Boolean))}\nUsage: ${JSON.stringify(snapshot.metrics)}\n${JSON.stringify(snapshot.processes)}`, "info");
     },
   });
   const upstreamModels = new Map<string, any>();

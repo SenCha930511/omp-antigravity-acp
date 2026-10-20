@@ -22,7 +22,13 @@ try {
   }
   await assert.rejects(command.handler("native-tools typo", context), /must be prefer or disabled/);
   assert.equal(JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8")).nativeTools, "prefer");
-  assert.ok(notices.length === 2);
+  await command.handler("native-tools disabled", context);
+  await command.handler("debug on", context);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8")), { nativeTools: "disabled", debugToolUpdates: true });
+  await command.handler("debug off", context);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(temporary, "omp-tools.json"), "utf8")), { nativeTools: "disabled", debugToolUpdates: false });
+  await assert.rejects(command.handler("debug typo", context), /Usage:/);
+  assert.ok(notices.length === 5);
   console.log("Isolated native-tool command persistence and validation: PASS");
 } finally {
   await hooks.get("session_shutdown")?.({}, {});

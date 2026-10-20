@@ -22,7 +22,7 @@ let report: any;
 function createRuntime(mode: string, mapping: string) {
   return new AntigravityRuntime((options: any) => {
     const handlers = options.handlers;
-    const connection = new TierConnection({ ...options, ompNativeTools: mode, handlers: { ...handlers,
+    const connection = new TierConnection({ ...options, ompNativeTools: mode, ompDebugToolUpdates: true, handlers: { ...handlers,
       onUpdate: async (notification: any) => {
         if (notification.update.sessionUpdate === "tool_call") report.serverTools.push(notification.update.title);
         await handlers.onUpdate?.(notification);
