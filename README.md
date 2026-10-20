@@ -184,6 +184,8 @@ Never include those user data directories, OAuth callback URLs, account identifi
 
 `npm run test:marketplace` exercises catalog discovery, installation, automatic provider loading, offline cache reuse and uninstallation in a temporary named OMP profile. It downloads the published adapter and cleans the entire test profile afterward. Add `-- --remote` after publishing catalog changes to test the GitHub source instead of the local working tree. No model inference is performed.
 
+For an explicit live check of outgoing tool-priority instructions, incoming thought events and a synthetic OMP tool round trip, use `bun scripts/diagnose-observability.ts --live --installed` from this source checkout. It consumes quota and creates ACP sessions. See the [2026-10-20 verification report](docs/observability-check-2026-10-20.md), including the corrected diagnosis of an isolated prompt-precedence test.
+
 Before publishing, verify local OMP loading without allowing ACP to start:
 
 ```sh
