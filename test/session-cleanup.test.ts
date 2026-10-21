@@ -110,3 +110,25 @@ test("invalid UUID/settings, corrupted registry, and busy locks fail closed", t 
   fs.rmdirSync(file + ".lock"); fs.writeFileSync(file, "broken");
   assert.equal(f.cleaner.collect(), 0); assert.ok(f.exists(id));
 });
+
+test("throttled touch skips redundant disk writes within throttle window and flushes before collect", t => {
+  const f = fixture(t);
+  f.cleaner.configure("timeout", 1);
+  const id = f.session();
+  const token = f.cleaner.acquire(id, true, 987654);
+  f.cleaner.release(token);
+  const state = path.join(f.root, "state");
+  const file = path.join(state, fs.readdirSync(state).find(n => n.startsWith("cleanup-sessions-"))!);
+  f.advance(0.0001); // ~8.64 seconds (< 60s throttle window)
+  fs.mkdirSync(file + ".lock");
+  // Within throttle window, touch() updates in-memory pendingTouches without acquiring disk lock
+  f.cleaner.touch(id);
+  fs.rmdirSync(file + ".lock");
+  // Advance just short of 1 day from the throttled touch; collect() flushes pendingTouches so session survives
+  f.advance(0.99995);
+  assert.equal(f.cleaner.collect(), 0);
+  assert.ok(f.exists(id));
+  f.advance(0.0002);
+  assert.equal(f.cleaner.collect(), 1);
+  assert.equal(f.exists(id), false);
+});

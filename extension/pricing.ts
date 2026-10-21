@@ -15,7 +15,11 @@ export function officialApiCost(modelId: string, at = Date.now()) {
   return undefined;
 }
 
-export function applyApiCostEstimate(modelId: string, usage: any, at = Date.now()) {
+export function applyApiCostEstimate(
+  modelId: string,
+  usage: { input?: unknown; output?: unknown; cacheRead?: unknown; cost?: unknown } | undefined,
+  at = Date.now(),
+) {
   const rates = officialApiCost(modelId, at);
   if (!rates || !usage) return;
   const tokens = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;

@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 0.1.15 — 2026-10-21
+
+- Internal hardening refactor with no behavior change: auth watching, logout following, catalog management, and command handling moved into focused modules (`auth-sync.ts`, `catalog-store.ts`, `commands.ts`), atomic JSON writes and file-error handling deduplicated into `fs-atomic.ts`, and `any` types replaced with explicit interfaces across the adapter.
+- Fix a cross-session usage-capture leak: supplemental usage queries now scope captured agent message chunks to the session that requested them, and a finished query no longer clears a newer concurrent capture.
+- Throttle session-cleanup registry touches to at most one disk write per minute per session, flushing pending timestamps on the next registry transaction or cleanup collect.
+- Keep the upstream build patches byte-identical while making them data-driven, and estimate transfer tokens from UTF-8 byte counts instead of a per-character scan (identical results for ASCII and CJK text).
+
 ## 0.1.14 — 2026-10-21
 
 - Stop OMP's `/logout` from reporting `antigravity-acp is still authenticated via provider config (fallback)`: when the marker credential is removed, the adapter synchronously unregisters and re-registers the provider without the non-secret config apiKey, so OMP finds no remaining auth source and the catalog correctly hides until the next `/login`.

@@ -17,7 +17,7 @@ export class TierConnection extends AntigravityAcpConnection {
   readonly contextUsage = new Map<string, { used: number; size: number }>();
   readonly usageStatus = new Map<string, { source: string; cache: string; error?: string }>();
   private readonly usageBaselines = new Map<string, SessionUsage>();
-  private usageCapture: { text: string } | undefined;
+  private usageCapture: { sessionId: string; text: string } | undefined;
   private readonly usageCommands = new Set<string>();
   private cleanup?: SessionCleanup;
   private cleanupLeases = new Map<string, string>();
@@ -31,23 +31,31 @@ export class TierConnection extends AntigravityAcpConnection {
     this.debugToolUpdates = options.ompDebugToolUpdates ?? false;
     this.usageMode = options.ompUsageMode ?? "auto";
     this.setHandlers({ ...options.handlers, onUpdate: async notification => {
-      const update: any = notification.update;
+      const update = notification.update as {
+        sessionUpdate?: string;
+        availableCommands?: Array<{ name?: string }>;
+        used?: number;
+        size?: number;
+        content?: { type?: string; text?: string };
+      };
       if (update.sessionUpdate === "available_commands_update") {
-        if (update.availableCommands?.some((command: any) => command.name === "usage")) this.usageCommands.add(notification.sessionId);
+        if (update.availableCommands?.some(command => command.name === "usage")) this.usageCommands.add(notification.sessionId);
         else this.usageCommands.delete(notification.sessionId);
       }
-      if (update.sessionUpdate === "usage_update" && Number.isSafeInteger(update.used) && Number.isSafeInteger(update.size)) {
+      if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && Number.isSafeInteger(update.used) && typeof update.size === "number" && Number.isSafeInteger(update.size)) {
         this.contextUsage.set(notification.sessionId, { used: update.used, size: update.size });
       }
-      if (this.usageCapture) {
-        if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") this.usageCapture.text += update.content.text;
+      if (this.usageCapture && this.usageCapture.sessionId === notification.sessionId) {
+        if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text" && typeof update.content.text === "string") {
+          this.usageCapture.text += update.content.text;
+        }
         return;
       }
       if (showAcpUpdate(notification, this.debugToolUpdates)) await options.handlers?.onUpdate?.(notification);
     } });
     if (options.ompNativeTools) {
       this.toolRouting = { nativeTools: options.ompNativeTools, channel: "pending" };
-      installSessionRouting((this as any).connection, this.initialized, options.ompNativeTools, advanced => {
+      installSessionRouting((this as unknown as { connection: unknown }).connection, this.initialized, options.ompNativeTools, advanced => {
         this.toolRouting!.channel = advanced ? "system-append" : "legacy-prompt";
       });
     }
@@ -82,7 +90,14 @@ export class TierConnection extends AntigravityAcpConnection {
     this.protectSession(args[0]);
     return super.loadSession(...args);
   }
+  private dropSessionState(id: string) {
+    this.contextUsage?.delete(id);
+    this.usageStatus?.delete(id);
+    this.usageBaselines?.delete(id);
+    this.usageCommands?.delete(id);
+  }
   retireForReplacement(key: string, id: string) {
+    this.dropSessionState(id);
     try { this.cleanup?.retire(key, id); } catch { /* Preserve files if bookkeeping is unavailable. */ }
   }
   confirmReplacement(key: string, id: string) {
@@ -102,19 +117,26 @@ export class TierConnection extends AntigravityAcpConnection {
   override async close() {
     await super.close();
     this.releaseCleanupLeases();
+    this.contextUsage?.clear();
+    this.usageStatus?.clear();
+    this.usageBaselines?.clear();
+    this.usageCommands?.clear();
   }
 
   private async readUsage(sessionId: string, signal?: AbortSignal) {
     const started = performance.now();
     this.usageQueryCount++;
-    const capture = { text: "" };
+    const capture = { sessionId, text: "" };
     this.usageCapture = capture;
     try {
       const deadline = AbortSignal.timeout(5_000);
       await super.prompt({ sessionId, prompt: [{ type: "text", text: "/usage" }] },
         signal ? AbortSignal.any([signal, deadline]) : deadline);
       return parseSessionUsage(capture.text);
-    } finally { this.usageCapture = undefined; this.usageQueryMs += performance.now() - started; }
+    } finally {
+      if (this.usageCapture === capture) this.usageCapture = undefined;
+      this.usageQueryMs += performance.now() - started;
+    }
   }
 
   override async prompt(request: Parameters<AntigravityAcpConnection["prompt"]>[0], signal?: AbortSignal) {
@@ -130,7 +152,7 @@ export class TierConnection extends AntigravityAcpConnection {
         } catch { /* Restore baseline is optional; never count the prior session as this turn. */ }
       }
       const response = await super.prompt(request, signal);
-      const withContext = (value: any) => {
+      const withContext = <T extends { _meta?: Record<string, unknown> }>(value: T): T => {
         const context = this.contextUsage.get(id);
         return context ? { ...value, _meta: { ...value._meta, ompContextTokens: context.used } } : value;
       };
@@ -171,7 +193,7 @@ export class TierConnection extends AntigravityAcpConnection {
     // Upstream 0.1.15 already has a deadline/abort-aware, verified selector
     // helper. Its TypeScript signature only mentions model/mode; thought_level
     // uses the exact same stable ACP RPC and server-advertised category.
-    const selected = await (this as any).setSelector(sessionId, thoughtSelector.id, effort, signal);
+    const selected = await (this as unknown as { setSelector: (sessionId: string, selectorId: string, value: string, signal?: AbortSignal) => Promise<boolean> }).setSelector(sessionId, thoughtSelector.id, effort, signal);
     if (!selected) throw new Error("Antigravity did not advertise a thinking-level selector");
     const state = this.getSessionState(sessionId);
     const model = selector(state, "model");

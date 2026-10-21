@@ -7,8 +7,21 @@ export interface AdvertisedModel {
   thoughtLevels?: string[];
   defaultThoughtLevel?: string;
 }
+export interface PublicCatalogModel {
+  id: string;
+  name: string;
+  api: "antigravity-acp";
+  provider: "antigravity-acp";
+  baseUrl?: string;
+  reasoning: boolean;
+  input: string[];
+  contextWindow: number;
+  maxTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  thinkingLevelMap?: Record<string, string | null>;
+  thinking?: { mode: "effort"; efforts: string[]; defaultLevel?: string };
+}
 const ROUTE_PREFIX = "__omp_acp_thought__:";
-
 export function validId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256 &&
     value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -16,7 +29,7 @@ export function validId(value: unknown): value is string {
 
 export function readModels(value: unknown): AdvertisedModel[] {
   if (!Array.isArray(value) || value.length > 2048) return [];
-  return value.filter((model: any) => model && validId(model.modelId) &&
+  return value.filter((model): model is AdvertisedModel => Boolean(model) && typeof model === "object" && validId(model.modelId) &&
     typeof model.name === "string" && model.name.length <= 512 &&
     (model.selector === undefined || typeof model.selector === "boolean") &&
     (model.thoughtLevels === undefined || (Array.isArray(model.thoughtLevels) &&
@@ -37,10 +50,10 @@ export function parseThoughtRoute(value: string): { modelId: string; effort: str
   throw new Error("Invalid local ACP thought selector route");
 }
 
-function publicModel(id: string, name: string, map: Record<string, string> = {}, current?: string) {
+function publicModel(id: string, name: string, map: Record<string, string> = {}, current?: string): PublicCatalogModel {
   const efforts = EFFORTS.filter(effort => map[effort]);
   const knownGemini = id === "gemini-4-argon" || id === "gemini-3.8-flash";
-  const defaultLevel = efforts.includes(current as any) ? current!
+  const defaultLevel = current && (efforts as readonly string[]).includes(current) ? current
     : efforts.includes("high") ? "high" : efforts.includes("medium") ? "medium" : efforts[0];
   return {
     id, name, api: "antigravity-acp", provider: "antigravity-acp", baseUrl: "",
@@ -56,7 +69,7 @@ function publicModel(id: string, name: string, map: Record<string, string> = {},
   };
 }
 
-export function projectCatalog(value: unknown): any[] {
+export function projectCatalog(value: unknown): PublicCatalogModel[] {
   const records = readModels(value);
   const groups = new Map<string, { name: string; map: Record<string, string>; count: number }>();
   for (const record of records) {
@@ -70,7 +83,7 @@ export function projectCatalog(value: unknown): any[] {
     groups.set(base!, group);
   }
   const emitted = new Set<string>();
-  const models: any[] = [];
+  const models: PublicCatalogModel[] = [];
   for (const record of records) {
     if (record.selector) {
       if (emitted.has(record.modelId)) continue;
@@ -91,16 +104,16 @@ export function projectCatalog(value: unknown): any[] {
   return models;
 }
 
-export function selectRuntimeModel(model: any, requested?: string): any {
+export function selectRuntimeModel<T extends PublicCatalogModel>(model: T, requested?: string): T {
   const map = model.thinkingLevelMap;
   if (!model.reasoning || !map) return model;
   const available = EFFORTS.filter(effort => typeof map[effort] === "string");
   const preference = requested && (EFFORTS as readonly string[]).includes(requested)
     ? requested : model.thinking?.defaultLevel ?? "medium";
-  const targetIndex = EFFORTS.indexOf(preference as any);
+  const targetIndex = (EFFORTS as readonly string[]).indexOf(preference);
   const selected = [...available].sort((a, b) =>
     Math.abs(EFFORTS.indexOf(a) - targetIndex) - Math.abs(EFFORTS.indexOf(b) - targetIndex))[0];
-  const route = map[preference] ?? map[selected];
+  const route = map[preference] ?? (selected ? map[selected] : undefined);
   if (!route) throw new Error(`No advertised ACP thinking choice for ${model.id}`);
   // Upstream 0.1.15 resolves through three effort buckets. Pin all buckets to
   // the exact selected route so off/minimal/xhigh/max are not clamped to high.

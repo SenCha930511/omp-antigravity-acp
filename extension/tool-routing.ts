@@ -21,15 +21,41 @@ export function parseNativeToolMode(value: unknown): NativeToolMode {
   throw new Error("nativeTools must be prefer or disabled");
 }
 
-export function supportsSessionRouting(initialize: any): boolean {
-  const version = initialize.agentInfo?.version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
-  return initialize.agentInfo?.name === "antigravity-acp" &&
+export interface InitializeMetadata {
+  agentInfo?: { name?: string; version?: string };
+  agentCapabilities?: {
+    _meta?: {
+      antigravity?: {
+        systemPrompt?: { append?: boolean };
+      };
+    };
+  };
+}
+
+export interface SessionRpcRequest {
+  mcpServers?: Array<{ name?: string }>;
+  _meta?: {
+    antigravity?: {
+      systemPrompt?: { append?: string };
+      eagerMcpServers?: string[];
+      enabledTools?: string[];
+      disabledTools?: string[];
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export function supportsSessionRouting(initialize: InitializeMetadata | undefined): boolean {
+  const version = initialize?.agentInfo?.version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  return initialize?.agentInfo?.name === "antigravity-acp" &&
     initialize.agentCapabilities?._meta?.antigravity?.systemPrompt?.append === true &&
     !!version && Number(version[1]) === 1 &&
     (Number(version[2]) > 4 || (Number(version[2]) === 4 && Number(version[3]) >= 1));
 }
 
-export function sessionRoutingRequest(request: any, initialize: any, mode: NativeToolMode) {
+export function sessionRoutingRequest<T extends SessionRpcRequest>(request: T, initialize: InitializeMetadata | undefined, mode: NativeToolMode): T {
   if (!supportsSessionRouting(initialize)) {
     if (mode === "disabled") {
       throw new Error("Native tool filtering requires official Antigravity ACP 1.4.1+ (1.x) with system-append support; refusing to weaken disabled mode");
@@ -39,7 +65,7 @@ export function sessionRoutingRequest(request: any, initialize: any, mode: Nativ
   const previous = request._meta?.antigravity ?? {};
   const inherited = typeof previous.systemPrompt?.append === "string" ? previous.systemPrompt.append : "";
   const eager = new Set(Array.isArray(previous.eagerMcpServers) ? previous.eagerMcpServers : []);
-  if (request.mcpServers?.some((server: any) => server.name === "pi-bridge")) eager.add("pi-bridge");
+  if (request.mcpServers?.some(server => server.name === "pi-bridge")) eager.add("pi-bridge");
   return { ...request, _meta: { ...request._meta, antigravity: {
     ...previous,
     systemPrompt: { append: [inherited, systemRouting(mode)].filter(Boolean).join("\n\n") },
@@ -51,11 +77,15 @@ export function sessionRoutingRequest(request: any, initialize: any, mode: Nativ
 
 // The pinned upstream connection exposes session methods but not their _meta
 // extension slot. Decorate its SDK RPC seam without modifying upstream files.
-export function installSessionRouting(rpc: any, initialized: Promise<any>, mode: NativeToolMode,
-  onApplied: (advanced: boolean) => void = () => {}) {
+export function installSessionRouting(
+  rpc: Record<string, (request: SessionRpcRequest) => Promise<unknown>>,
+  initialized: Promise<InitializeMetadata>,
+  mode: NativeToolMode,
+  onApplied: (advanced: boolean) => void = () => {},
+) {
   for (const name of ["newSession", "loadSession", "resumeSession"]) {
-    const original = rpc[name].bind(rpc);
-    rpc[name] = async (request: any) => {
+    const original = rpc[name]!.bind(rpc);
+    rpc[name] = async (request: SessionRpcRequest) => {
       const initialize = await initialized;
       const routed = sessionRoutingRequest(request, initialize, mode);
       const response = await original(routed);

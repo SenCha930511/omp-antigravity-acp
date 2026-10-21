@@ -13,7 +13,7 @@ const exports = [
   ["loadConfig, savePermissionMode", "config.ts"],
   ["inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials, resolveAntigravityAcpDirectory", "acp/antigravity.ts"],
   ["describeCredentialStorage", "acp/credential-storage.ts"],
-  ["projectModels", "models.ts"],
+  ["FALLBACK_MODELS, projectModels", "models.ts"],
   ["AcpSessionStore", "acp/session-store.ts"],
   ["ensureAntigravityAcpReady", "acp/setup.ts"],
   ["planToolProjection", "mcp/bridge.ts"],
@@ -56,18 +56,36 @@ const result = await build({
       });
       builder.onLoad({ filter: /\/src\/runtime\.ts$/ }, async ({ path: file }) => {
         if (file !== path.join(upstream, "src/runtime.ts")) return;
-        const source = await fs.readFile(file, "utf8");
-        const marker = "buildPromptParts(context, fresh, unseenStart)";
-        if (source.split(marker).length !== 2) throw new Error("Pinned upstream context seam changed; review compatibility");
-        const retirement = "if (!persistent) await this.dropBinding(key, binding);";
-        if (source.split(retirement).length !== 2) throw new Error("Pinned upstream connection retirement seam changed; review compatibility");
-        const cleanupRetire = "const current = this.bindings.get(key);\n\t\tif (current && (await current) === binding";
-        const cleanupConfirm = "this.persistBinding(binding);\n\t\t\tswitch (response.stopReason)";
-        for (const seam of [cleanupRetire, cleanupConfirm]) if (source.split(seam).length !== 2) throw new Error("Pinned upstream cleanup seam changed; review compatibility");
-        return { contents: source.replace(marker, "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })")
-          .replace(retirement, "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);")
-          .replace(cleanupRetire, "if (removeSaved) binding.connection.retireForReplacement?.(key, binding.session.sessionId);\n\t\t" + cleanupRetire)
-          .replace(cleanupConfirm, "this.persistBinding(binding);\n\t\t\tif (response.stopReason === 'end_turn') { binding.connection.confirmReplacement?.(key, binding.session.sessionId); if (!persistent) binding.connection.discardSession?.(binding.session.sessionId); }\n\t\t\tswitch (response.stopReason)"), loader: "ts" };
+        const patches = [
+          {
+            name: "context",
+            anchor: "buildPromptParts(context, fresh, unseenStart)",
+            replacement: "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })",
+          },
+          {
+            name: "connection retirement",
+            anchor: "if (!persistent) await this.dropBinding(key, binding);",
+            replacement: "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);",
+          },
+          {
+            name: "cleanup retire",
+            anchor: "const current = this.bindings.get(key);\n\t\tif (current && (await current) === binding",
+            replacement: "if (removeSaved) binding.connection.retireForReplacement?.(key, binding.session.sessionId);\n\t\tconst current = this.bindings.get(key);\n\t\tif (current && (await current) === binding",
+          },
+          {
+            name: "cleanup confirm",
+            anchor: "this.persistBinding(binding);\n\t\t\tswitch (response.stopReason)",
+            replacement: "this.persistBinding(binding);\n\t\t\tif (response.stopReason === 'end_turn') { binding.connection.confirmReplacement?.(key, binding.session.sessionId); if (!persistent) binding.connection.discardSession?.(binding.session.sessionId); }\n\t\t\tswitch (response.stopReason)",
+          },
+        ];
+        let contents = await fs.readFile(file, "utf8");
+        for (const patch of patches) {
+          if (contents.split(patch.anchor).length !== 2) {
+            throw new Error(`Pinned upstream ${patch.name} seam changed; review compatibility`);
+          }
+          contents = contents.replace(patch.anchor, patch.replacement);
+        }
+        return { contents, loader: "ts" };
       });
       builder.onLoad({ filter: /\/(?:process|runtime-manifest)\.ts$/ }, async ({ path: file }) => {
         const relative = path.relative(upstream, file).split(path.sep).join("/");

@@ -1,8 +1,6 @@
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
-import path from "node:path";
+import { errorMessageOf, isMissingFileError, writeJsonAtomic } from "./fs-atomic.ts";
 import { parseNativeToolMode, type NativeToolMode } from "./tool-routing.ts";
-
 export function loadNativeToolMode(file: string): NativeToolMode {
   return loadToolPolicy(file).nativeTools;
 }
@@ -11,16 +9,19 @@ export interface ToolPolicy { nativeTools: NativeToolMode; debugToolUpdates: boo
 
 export function loadToolPolicy(file: string): ToolPolicy {
   try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    const data: unknown = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("expected a policy object");
-    if (data.debugToolUpdates !== undefined && typeof data.debugToolUpdates !== "boolean") {
+    const record = data as { nativeTools?: unknown; debugToolUpdates?: unknown };
+    if (record.debugToolUpdates !== undefined && typeof record.debugToolUpdates !== "boolean") {
       throw new Error("debugToolUpdates must be boolean");
     }
-    return { nativeTools: parseNativeToolMode(data.nativeTools === undefined ? "prefer" : data.nativeTools), debugToolUpdates: data.debugToolUpdates ?? false };
-  }
-  catch (error: any) {
-    if (error.code === "ENOENT") return { nativeTools: "prefer", debugToolUpdates: false };
-    throw new Error(`Invalid OMP ACP tool policy: ${error.message}`);
+    return {
+      nativeTools: parseNativeToolMode(record.nativeTools === undefined ? "prefer" : String(record.nativeTools)),
+      debugToolUpdates: record.debugToolUpdates ?? false,
+    };
+  } catch (error: unknown) {
+    if (isMissingFileError(error)) return { nativeTools: "prefer", debugToolUpdates: false };
+    throw new Error(`Invalid OMP ACP tool policy: ${errorMessageOf(error)}`);
   }
 }
 
@@ -35,10 +36,5 @@ export function saveDebugToolUpdates(file: string, enabled: boolean) {
 }
 
 function saveToolPolicy(file: string, policy: ToolPolicy) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(policy, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporary, file);
-  } finally { fs.rmSync(temporary, { force: true }); }
+  writeJsonAtomic(file, policy);
 }
