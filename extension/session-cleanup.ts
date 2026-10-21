@@ -1,206 +1,144 @@
 import fs from "node:fs";
+import afs from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { lockSync } from "proper-lockfile";
+import { lock } from "proper-lockfile";
 import { resolveAntigravityAcpDirectory } from "pi-antigravity-acp-provider/src/acp/antigravity.ts";
 import { isMissingFileError, writeJsonAtomic } from "./fs-atomic.ts";
-
 export type CleanupMode = "off" | "conservative" | "timeout";
-export interface CleanupPolicy { mode: CleanupMode; idleDays: number }
+export interface CleanupPolicy { mode: CleanupMode; idleDays: number; maxSessions?: number; maxBytes?: number; orphanGraceDays?: number; batchSize?: number }
 const DEFAULT: CleanupPolicy = { mode: "conservative", idleDays: 7 };
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const TOUCH_THROTTLE_MS = 60_000;
 interface Lease { token: string; pid: number; serverPid: number }
-interface SessionRecord { id: string; owned: boolean; lastUsed: number; leases: Lease[]; retiredFor?: string; replaced?: boolean }
-interface Registry { version: 1; sessions: SessionRecord[] }
+interface Record { id: string; owned: boolean; lastUsed: number; leases: Lease[]; retiredFor?: string; replaced?: boolean; orphanedAt?: number }
+interface Registry { version: 1; sessions: Record[] }
+const tails = new Map<string, Promise<unknown>>();
+function validate(p: CleanupPolicy): CleanupPolicy {
+  if (!p || !["off", "conservative", "timeout"].includes(p.mode) || !Number.isFinite(p.idleDays) || p.idleDays < 1 / 24 || p.idleDays > 3650) throw new Error("Cleanup requires off|conservative|timeout and idleDays between 1/24 and 3650");
+  for (const k of ["maxSessions", "maxBytes", "batchSize"] as const) if (p[k] !== undefined && (!Number.isSafeInteger(p[k]) || p[k]! < (k === "batchSize" ? 1 : 0) || (k === "batchSize" && p[k]! > 100))) throw new Error(`Invalid cleanup ${k}`);
+  if (p.orphanGraceDays !== undefined && (!Number.isFinite(p.orphanGraceDays) || p.orphanGraceDays < 1 / 24 || p.orphanGraceDays > 3650)) throw new Error("Invalid orphanGraceDays");
+  return { mode: p.mode, idleDays: p.idleDays, ...Object.fromEntries(["maxSessions", "maxBytes", "orphanGraceDays", "batchSize"].filter(k => p[k as keyof CleanupPolicy] !== undefined).map(k => [k, p[k as keyof CleanupPolicy]])) };
+}
+export function loadCleanupPolicy(file: string): CleanupPolicy { try { return validate(JSON.parse(fs.readFileSync(file, "utf8"))); } catch (e) { if (isMissingFileError(e)) return { ...DEFAULT }; throw e; } }
+export function saveCleanupPolicy(file: string, p: CleanupPolicy) { writeJsonAtomic(file, validate(p), false); }
+function live(pid: number) { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; } }
+const group = (key: string) => createHash("sha256").update(key).digest("hex");
 
-function validate(policy: unknown): CleanupPolicy {
-  const candidate = policy as Partial<CleanupPolicy> | null | undefined;
-  if (!candidate || typeof candidate !== "object" || !["off", "conservative", "timeout"].includes(String(candidate.mode)) ||
-      typeof candidate.idleDays !== "number" || !Number.isFinite(candidate.idleDays) || candidate.idleDays < 1 / 24 || candidate.idleDays > 3650) {
-    throw new Error("Cleanup requires mode off|conservative|timeout and idleDays between 1/24 (one hour) and 3650");
-  }
-  return { mode: candidate.mode as CleanupMode, idleDays: candidate.idleDays };
-}
-export function loadCleanupPolicy(file: string): CleanupPolicy {
-  try { return validate(JSON.parse(fs.readFileSync(file, "utf8"))); }
-  catch (error: unknown) { if (isMissingFileError(error)) return { ...DEFAULT }; throw error; }
-}
-export function saveCleanupPolicy(file: string, policy: CleanupPolicy) {
-  writeJsonAtomic(file, validate(policy), false);
-}
-function live(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error: unknown) { return !(error && typeof error === "object" && "code" in error && error.code === "ESRCH"); }
-}
-function group(key: string) { return createHash("sha256").update(key).digest("hex"); }
-
-// Only UUIDs registered by this adapter can become deletion candidates. No
-// directory-wide adoption of old/unidentified Google sessions is performed.
+// Ownership, mapped sessions and live leases are protected independently of
+// quota. Keep the cross-process lease lock during asynchronous file deletion.
 export class SessionCleanup {
   readonly policyPath: string;
   private readonly registryPath: string;
   private timer?: NodeJS.Timeout;
-  private readonly lastTouched = new Map<string, number>();
-  private readonly pendingTouches = new Map<string, number>();
-  private cachedPolicy?: { mtimeMs: number; size: number; policy: CleanupPolicy };
-  constructor(stateDir: string, readonly acpDir = resolveAntigravityAcpDirectory(),
-    private readonly now = Date.now, private readonly isLive = live) {
+  private nextBatch?: NodeJS.Timeout;
+  private collecting?: Promise<number>;
+  private readonly touched = new Map<string, number>();
+  private readonly intents: Array<(r: Registry) => void> = [];
+  private report = { owned: 0, active: 0, mapped: 0, unmapped: 0, ownedBytes: 0, overBudget: false, removed: 0, failures: 0, deferred: 0 };
+  constructor(private readonly stateDir: string, readonly acpDir = resolveAntigravityAcpDirectory(), private readonly now = Date.now, private readonly isLive = live) {
     this.policyPath = path.join(stateDir, "cleanup.json");
-    // Separate registries when the same OMP profile uses different GEMINI_HOME.
-    const root = createHash("sha256").update(path.resolve(acpDir)).digest("hex").slice(0, 16);
-    this.registryPath = path.join(stateDir, `cleanup-sessions-${root}.json`);
+    this.registryPath = path.join(stateDir, `cleanup-sessions-${createHash("sha256").update(path.resolve(acpDir)).digest("hex").slice(0, 16)}.json`);
   }
-  // Stat-based cache: release/collect/status otherwise re-read this file on
-  // every call. mtime plus size covers test rewrites within the same ms.
-  private getPolicy(): CleanupPolicy {
-    try {
-      const stat = fs.statSync(this.policyPath);
-      if (this.cachedPolicy && this.cachedPolicy.mtimeMs === stat.mtimeMs && this.cachedPolicy.size === stat.size) {
-        return this.cachedPolicy.policy;
-      }
-      const policy = validate(JSON.parse(fs.readFileSync(this.policyPath, "utf8")));
-      this.cachedPolicy = { mtimeMs: stat.mtimeMs, size: stat.size, policy };
-      return policy;
-    } catch (error: unknown) {
-      if (isMissingFileError(error)) return { ...DEFAULT };
-      throw error;
-    }
+  configure(mode: CleanupMode, idleDays = loadCleanupPolicy(this.policyPath).idleDays) { saveCleanupPolicy(this.policyPath, { ...loadCleanupPolicy(this.policyPath), mode, idleDays }); }
+  budget(maxSessions: number, maxBytes: number) { saveCleanupPolicy(this.policyPath, { ...loadCleanupPolicy(this.policyPath), maxSessions, maxBytes }); }
+  status() { return { ...loadCleanupPolicy(this.policyPath), ...this.report, warning: this.report.overBudget ? "Soft budget exceeded; mapped and active sessions remain protected" : undefined, pendingLifecycleUpdates: this.intents.length, file: this.policyPath, scope: "adapter-owned local ACP data" }; }
+  start() { if (this.timer) return; void this.collect(); this.timer = setInterval(() => { void this.collect(); }, 15 * 60_000); this.timer.unref(); }
+  async stop() { clearInterval(this.timer); clearTimeout(this.nextBatch); this.timer = undefined; this.nextBatch = undefined; await this.collecting; await tails.get(this.registryPath)?.catch(() => {}); }
+  private transaction<T>(action: (r: Registry) => T | Promise<T>): Promise<T> {
+    const pending = (tails.get(this.registryPath) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      await afs.mkdir(path.dirname(this.registryPath), { recursive: true, mode: 0o700 });
+      const release = await lock(this.registryPath, { realpath: false, stale: 600_000, retries: 0 });
+      try {
+        let r: Registry = { version: 1, sessions: [] };
+        try { r = JSON.parse(await afs.readFile(this.registryPath, "utf8")); } catch (e) { if (!isMissingFileError(e)) throw e; }
+        if (r.version !== 1 || !Array.isArray(r.sessions) || !r.sessions.every(v => UUID.test(v.id) && typeof v.owned === "boolean" && Number.isFinite(v.lastUsed) && Array.isArray(v.leases) &&
+          (v.replaced === undefined || typeof v.replaced === "boolean") && (v.orphanedAt === undefined || Number.isFinite(v.orphanedAt)) && (v.retiredFor === undefined || /^[a-f0-9]{64}$/.test(v.retiredFor)) &&
+          v.leases.every(l => typeof l.token === "string" && Number.isSafeInteger(l.pid) && l.pid > 0 && Number.isSafeInteger(l.serverPid) && l.serverPid > 0))) throw new Error("Invalid ACP cleanup registry; refusing deletion");
+        const actions = this.intents.slice(); for (const apply of actions) apply(r);
+        for (const v of r.sessions) if (this.touched.has(v.id)) v.lastUsed = Math.max(v.lastUsed, this.touched.get(v.id)!);
+        const result = await action(r), tmp = this.registryPath + "." + randomUUID() + ".tmp";
+        try { await afs.writeFile(tmp, JSON.stringify(r), { mode: 0o600, flag: "wx" }); await afs.rename(tmp, this.registryPath); }
+        finally { await afs.rm(tmp, { force: true }); }
+        this.intents.splice(0, actions.length); return result;
+      } finally { await release(); }
+    });
+    tails.set(this.registryPath, pending);
+    void pending.finally(() => { if (tails.get(this.registryPath) === pending) tails.delete(this.registryPath); }).catch(() => {});
+    return pending;
   }
-  configure(mode: CleanupMode, idleDays = this.getPolicy().idleDays) {
-    saveCleanupPolicy(this.policyPath, { mode, idleDays });
-    this.cachedPolicy = undefined;
-  }
-  status() { return { ...this.getPolicy(), file: this.policyPath, scope: "adapter-owned local ACP data" }; }
-  start() {
-    if (this.timer) return;
-    this.collect();
-    this.timer = setInterval(() => this.collect(), 15 * 60_000);
-    this.timer.unref();
-  }
-  stop() { clearInterval(this.timer); this.timer = undefined; }
-
-  private transaction<T>(action: (registry: Registry) => T): T {
-    fs.mkdirSync(path.dirname(this.registryPath), { recursive: true, mode: 0o700 });
-    // No retries/blocking sleeps in the inference path. Busy/malformed stores
-    // fail closed; callers defer cleanup instead of risking another process.
-    const release = lockSync(this.registryPath, { realpath: false, stale: 600_000 });
-    try {
-      let registry: Registry = { version: 1, sessions: [] };
-      try { registry = JSON.parse(fs.readFileSync(this.registryPath, "utf8")) as Registry; }
-      catch (error: unknown) { if (!isMissingFileError(error)) throw error; }
-      if (registry.version !== 1 || !Array.isArray(registry.sessions) || !registry.sessions.every(r =>
-        UUID.test(r.id) && typeof r.owned === "boolean" && Number.isFinite(r.lastUsed) && Array.isArray(r.leases) &&
-        (r.replaced === undefined || typeof r.replaced === "boolean") &&
-        (r.retiredFor === undefined || /^[a-f0-9]{64}$/.test(r.retiredFor)) &&
-        r.leases.every(l => typeof l.token === "string" && Number.isSafeInteger(l.pid) && l.pid > 0 && Number.isSafeInteger(l.serverPid) && l.serverPid > 0))) {
-        throw new Error("Invalid ACP cleanup registry; refusing deletion");
-      }
-      if (this.pendingTouches.size > 0) {
-        for (const r of registry.sessions) {
-          const touched = this.pendingTouches.get(r.id);
-          if (touched !== undefined && touched > r.lastUsed) r.lastUsed = touched;
-        }
-        this.pendingTouches.clear();
-      }
-      const result = action(registry);
-      writeJsonAtomic(this.registryPath, registry, false);
-      return result;
-    } finally { release(); }
-  }
-  acquire(id: string, owned: boolean, serverPid: number): string {
+  async acquire(id: string, owned: boolean, serverPid: number) {
     if (!UUID.test(id) || !Number.isSafeInteger(serverPid) || serverPid <= 0) throw new Error("Invalid ACP cleanup lease");
-    return this.transaction(registry => {
-      const timestamp = this.now();
-      let record = registry.sessions.find(r => r.id === id);
-      if (!record) { record = { id, owned, lastUsed: timestamp, leases: [] }; registry.sessions.push(record); }
-      // Resuming an old/foreign session never upgrades its ownership.
-      const token = randomUUID();
-      record.leases.push({ token, pid: process.pid, serverPid });
-      record.lastUsed = timestamp;
-      this.lastTouched.set(id, timestamp);
-      return token;
+    return this.transaction(r => {
+      let v = r.sessions.find(v => v.id === id);
+      if (!v) { v = { id, owned, lastUsed: this.now(), leases: [] }; r.sessions.push(v); }
+      const token = randomUUID(); v.leases.push({ token, pid: process.pid, serverPid }); v.lastUsed = this.now(); delete v.orphanedAt;
+      this.touched.set(id, v.lastUsed); return token;
     });
   }
-  release(token: string) {
-    this.transaction(registry => { for (const r of registry.sessions) r.leases = r.leases.filter(l => l.token !== token); });
-    this.collect();
+  private async intent(action: (r: Registry) => void) {
+    if (this.intents.length >= 1024) throw new Error("Lifecycle retry queue full; preserving files");
+    this.intents.push(action); try { await this.transaction(() => {}); } catch (e) { this.report.failures++; throw e; }
   }
-  touch(id: string) {
-    const timestamp = this.now();
-    const last = this.lastTouched.get(id);
-    if (last !== undefined && timestamp - last < TOUCH_THROTTLE_MS) {
-      this.pendingTouches.set(id, timestamp);
-      return;
-    }
-    this.transaction(registry => {
-      const r = registry.sessions.find(r => r.id === id);
-      if (r) { r.lastUsed = timestamp; this.lastTouched.set(id, timestamp); }
+  async release(token: string, background = false) { await this.intent(r => { for (const v of r.sessions) v.leases = v.leases.filter(l => l.token !== token); }); if (background) { void this.collect(); return 0; } return this.collect(); }
+  async touch(id: string) { const last = this.touched.get(id); this.touched.set(id, this.now()); if (last !== undefined && this.now() - last < 60_000) return; await this.transaction(() => {}); }
+  retire(key: string, id: string) { return this.intent(r => { const v = r.sessions.find(v => v.id === id); if (v?.owned) { v.retiredFor = group(key); v.replaced = false; } }); }
+  async confirm(key: string, replacement: string, background = false) { await this.intent(r => { for (const v of r.sessions) if (v.id !== replacement && v.retiredFor === group(key)) v.replaced = true; }); if (background) { void this.collect(); return 0; } return this.collect(); }
+  collect(): Promise<number> {
+    if (this.collecting) return this.collecting;
+    const pending = this.collectOnce().catch(() => { this.report.failures++; return 0; }); this.collecting = pending;
+    void pending.finally(() => {
+      if (this.collecting === pending) this.collecting = undefined;
+      if (this.timer && this.report.deferred > 0 && !this.nextBatch) {
+        this.nextBatch = setTimeout(() => { this.nextBatch = undefined; void this.collect(); }, 1000); this.nextBatch.unref();
+      }
+    }); return pending;
+  }
+  private async collectOnce() {
+    const policy = loadCleanupPolicy(this.policyPath);
+    return this.transaction(async registry => {
+      let mappings: Array<{ acpSessionId: string }> = [];
+      try { const p = JSON.parse(await afs.readFile(path.join(this.stateDir, "sessions.json"), "utf8")); if (!Array.isArray(p)) throw new Error("Invalid mappings"); mappings = p; } catch (e) { if (!isMissingFileError(e)) throw e; }
+      const mapped = new Set(mappings.map(v => v.acpSessionId));
+      const report = { owned: 0, active: 0, mapped: 0, unmapped: 0, ownedBytes: 0, overBudget: false, removed: 0, failures: this.report.failures, deferred: 0 };
+      let dirs: { conversations: string; brain: string } | undefined;
+      const owned = [];
+      for (const v of registry.sessions) {
+        v.leases = v.leases.filter(l => this.isLive(l.pid) || this.isLive(l.serverPid)); if (!v.owned) continue;
+        report.owned++; if (v.leases.length) report.active++;
+        if (mapped.has(v.id)) { report.mapped++; delete v.orphanedAt; } else { report.unmapped++; v.orphanedAt ??= this.now(); }
+        let size = 0; try { dirs ??= await this.verifyRoot(); for (const target of this.targets(v.id, dirs)) size += await this.inspect(target); } catch { report.failures++; }
+        report.ownedBytes += size; owned.push({ v, size });
+      }
+      const over = () => Boolean((policy.maxSessions && report.owned > policy.maxSessions) || (policy.maxBytes && report.ownedBytes > policy.maxBytes));
+      report.overBudget = over();
+      if (policy.mode !== "off") for (const { v, size } of owned.sort((a, b) => a.v.lastUsed - b.v.lastUsed)) {
+        if (mapped.has(v.id) || v.leases.length) continue;
+        const expired = policy.mode === "timeout" && (this.now() - v.lastUsed >= policy.idleDays * 86_400_000 || (over() && this.now() - v.orphanedAt! >= (policy.orphanGraceDays ?? 1) * 86_400_000));
+        if (!v.replaced && !expired) continue;
+        if (report.removed >= (policy.batchSize ?? 8)) { report.deferred++; continue; }
+        try {
+          dirs ??= await this.verifyRoot(); const targets = this.targets(v.id, dirs);
+          for (const target of targets) await this.inspect(target);
+          for (const target of targets) await afs.rm(target, { recursive: true, force: true });
+          registry.sessions = registry.sessions.filter(r => r !== v); this.touched.delete(v.id);
+          report.removed++; report.owned--; report.unmapped--; report.ownedBytes -= size;
+        } catch { report.failures++; }
+      }
+      registry.sessions = registry.sessions.filter(v => v.owned || v.leases.length);
+      report.overBudget = over(); this.report = report; return report.removed;
     });
   }
-  retire(key: string, id: string) {
-    this.transaction(registry => {
-      const r = registry.sessions.find(r => r.id === id);
-      if (r?.owned) { r.retiredFor = group(key); r.replaced = false; }
-    });
+  private targets(id: string, d: { conversations: string; brain: string }) { return [".db", ".db-wal", ".db-shm", ".db-journal", ".meta"].map(s => path.join(d.conversations, id + s)).concat(path.join(d.brain, id)); }
+  private async verifyRoot() {
+    const root = path.resolve(this.acpDir); if (await afs.realpath(root) !== root) throw new Error("Symlinked ACP root");
+    const dirs = { conversations: path.join(root, "conversations"), brain: path.join(root, "brain") };
+    for (const d of Object.values(dirs)) try { if (await afs.realpath(d) !== d) throw new Error("Symlinked cleanup directory"); } catch (e) { if (!isMissingFileError(e)) throw e; }
+    return dirs;
   }
-  confirm(key: string, replacement: string) {
-    this.transaction(registry => {
-      for (const r of registry.sessions) if (r.id !== replacement && r.retiredFor === group(key)) r.replaced = true;
-    });
-    this.collect();
-  }
-  collect(): number {
-    try {
-      const policy = this.getPolicy();
-      if (policy.mode === "off") return 0;
-      return this.transaction(registry => {
-        let removed = 0;
-        // Verify the cleanup root once per collect, lazily on the first
-        // eligible session instead of once per removed session.
-        let dirs: { conversations: string; brain: string } | undefined;
-        registry.sessions = registry.sessions.filter(r => {
-          r.leases = r.leases.filter(l => this.isLive(l.pid) || this.isLive(l.serverPid));
-          if (!r.owned && r.leases.length === 0) return false;
-          const eligible = r.owned && r.leases.length === 0 && (r.replaced === true ||
-            (policy.mode === "timeout" && this.now() - r.lastUsed >= policy.idleDays * 86_400_000));
-          if (!eligible) return true;
-          try {
-            dirs ??= this.verifyCleanupRoot();
-            this.removeFiles(r.id, dirs);
-            this.lastTouched.delete(r.id);
-            this.pendingTouches.delete(r.id);
-            removed++;
-            return false;
-          }
-          catch { return true; } // Keep ownership for a later retry; never fail a model answer.
-        });
-        return removed;
-      });
-    } catch { return 0; }
-  }
-  private verifyCleanupRoot(): { conversations: string; brain: string } {
-    const root = path.resolve(this.acpDir);
-    if (fs.realpathSync(root) !== root) throw new Error("Symlinked ACP root; refusing cleanup");
-    const conversations = path.join(root, "conversations");
-    const brain = path.join(root, "brain");
-    for (const parent of [conversations, brain]) {
-      try { if (fs.realpathSync(parent) !== parent) throw new Error("Symlinked cleanup directory"); }
-      catch (error: unknown) { if (!isMissingFileError(error)) throw error; }
-    }
-    return { conversations, brain };
-  }
-  private removeFiles(id: string, dirs: { conversations: string; brain: string }) {
-    const targets = [path.join(dirs.conversations, `${id}.db`), path.join(dirs.conversations, `${id}.db-wal`),
-      path.join(dirs.conversations, `${id}.db-shm`), path.join(dirs.conversations, `${id}.db-journal`),
-      path.join(dirs.conversations, `${id}.meta`), path.join(dirs.brain, id)];
-    const inspect = (file: string) => {
-      let stat: fs.Stats;
-      try { stat = fs.lstatSync(file); } catch (error: unknown) { if (isMissingFileError(error)) return; throw error; }
-      if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw new Error("Unsafe cleanup target");
-      if (stat.isDirectory()) for (const child of fs.readdirSync(file)) inspect(path.join(file, child));
-    };
-    for (const target of targets) inspect(target);
-    for (const target of targets) fs.rmSync(target, { recursive: true, force: true });
+  private async inspect(file: string): Promise<number> {
+    let s: import("node:fs").Stats; try { s = await afs.lstat(file); } catch (e) { if (isMissingFileError(e)) return 0; throw e; }
+    if (s.isSymbolicLink() || (!s.isDirectory() && !s.isFile())) throw new Error("Unsafe cleanup target");
+    if (!s.isDirectory()) return s.size;
+    let size = 0; for (const f of await afs.readdir(file)) size += await this.inspect(path.join(file, f)); return size;
   }
 }

@@ -5,6 +5,7 @@ import { saveToolPolicy, type ToolPolicy } from "./tool-policy.ts";
 import { updateContextSettings, resolveContextOptions, saveContextSettings, type ContextSettings } from "./context-settings.ts";
 import type { CatalogStore, ConfiguredCatalogModel } from "./catalog-store.ts";
 import type { SessionCleanup, CleanupMode } from "./session-cleanup.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 import type { TierConnection } from "./tier-connection.ts";
 
 export interface RuntimeSnapshotProcess {
@@ -62,6 +63,7 @@ export interface CommandControllerDeps {
   contextPath: string;
   toolPolicyPath: string;
   cleanup: SessionCleanup;
+  diagnostics?: Diagnostics;
   connections: Set<TierConnection>;
   auth: OmpAuthCoordinator;
   catalog: CatalogStore;
@@ -88,8 +90,19 @@ export function createAntigravityCommandHandler(deps: CommandControllerDeps) {
     deps.auth.watchOmpCredentials(ctx);
     const parts = args.trim().split(/\s+/);
     const [command, value] = parts;
+    if (command === "diagnostics") {
+      if (parts.length > 2 || (value !== undefined && !["on", "off", "reset"].includes(value))) throw new Error("Usage: /antigravity-acp diagnostics [on|off|reset]");
+      if (value === "reset") deps.diagnostics?.reset();
+      else if (value) deps.diagnostics?.configure(value === "on");
+      ctx.ui.notify(JSON.stringify(deps.diagnostics?.status() ?? { enabled: false }, null, 2), "info");
+      return;
+    }
 
     if (command === "cleanup") {
+      if (value === "budget") {
+        if (parts.length !== 4) throw new Error("Usage: /antigravity-acp cleanup budget MAX_SESSIONS MAX_MIB (0 disables a limit)");
+        deps.cleanup.budget(Number(parts[2]), Number(parts[3]) * 1024 * 1024);
+      } else
       if (value) {
         if (!["off", "conservative", "timeout"].includes(value) || parts.length > 3 || (parts[2] !== undefined && value !== "timeout")) {
           throw new Error("Usage: /antigravity-acp cleanup [off|conservative|timeout [DAYS]]");
@@ -97,7 +110,8 @@ export function createAntigravityCommandHandler(deps: CommandControllerDeps) {
         deps.cleanup.configure(value as CleanupMode, parts[2] === undefined ? undefined : Number(parts[2]));
         deps.cleanup.start();
       }
-      const removed = deps.cleanup.collect();
+      deps.cleanup.start();
+      const removed = await deps.cleanup.collect();
       ctx.ui.notify(JSON.stringify({
         ...deps.cleanup.status(),
         removed,
@@ -260,7 +274,7 @@ export function createAntigravityCommandHandler(deps: CommandControllerDeps) {
       await Promise.all(deps.getAllRuntimes().map(bundle => bundle.runtime.setPermissionMode(mode)));
       savePermissionMode(mode, deps.configPath);
     }
-    const usageError = "Usage: /antigravity-acp [status|account|login|logout|tools|usage|context|cleanup|debug|native-tools|permissions|refresh]";
+    const usageError = "Usage: /antigravity-acp [status|account|login|logout|tools|usage|context|cleanup|diagnostics|debug|native-tools|permissions|refresh]";
     if (command && command !== "status" && command !== "tools" && command !== "permissions") {
       throw new Error(usageError);
     }

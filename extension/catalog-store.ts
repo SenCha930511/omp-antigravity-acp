@@ -15,6 +15,9 @@ export class CatalogStore {
   readonly upstreamModels = new Map<string, ConfiguredCatalogModel>();
   currentModels: ConfiguredCatalogModel[] = [];
   private dynamicCache?: { mtimeMs: number; size: number; settings: ContextSettings; models: ConfiguredCatalogModel[] };
+  private discovery?: Promise<AdvertisedModel[]>;
+  private refreshing?: Promise<ConfiguredCatalogModel[]>;
+  private latestSettings?: ContextSettings;
 
   constructor(
     private readonly cachePath: string,
@@ -24,6 +27,8 @@ export class CatalogStore {
   ) {}
 
   projectWithSettings(models: PublicCatalogModel[], settings: ContextSettings): ConfiguredCatalogModel[] {
+    this.latestSettings = settings;
+    this.upstreamModels.clear();
     return models.map(source => {
       const limits = resolveContextOptions(source, settings);
       const model: ConfiguredCatalogModel = {
@@ -84,6 +89,13 @@ export class CatalogStore {
   }
 
   async discoverModels(): Promise<AdvertisedModel[]> {
+    if (this.discovery) return this.discovery;
+    const pending = this.discoverOnce();
+    this.discovery = pending;
+    try { return await pending; }
+    finally { if (this.discovery === pending) this.discovery = undefined; }
+  }
+  private async discoverOnce(): Promise<AdvertisedModel[]> {
     await this.prepareRuntime();
     const connection = new TierConnection({ cwd: process.cwd(), ompCleanup: this.cleanup });
     let discoveredSession: string | undefined;
@@ -106,15 +118,21 @@ export class CatalogStore {
       if (!models.length) throw new Error("Antigravity did not advertise any models");
       return models;
     } finally {
-      if (discoveredSession) connection.discardSession(discoveredSession);
-      await connection.close();
+      try { if (discoveredSession) await connection.discardSession(discoveredSession); }
+      finally { await connection.close(); }
     }
   }
 
   async refresh(settings: ContextSettings): Promise<ConfiguredCatalogModel[]> {
+    this.latestSettings = settings;
+    if (this.refreshing) return this.refreshing;
+    const pending = this.refreshOnce(); this.refreshing = pending;
+    try { return await pending; } finally { if (this.refreshing === pending) this.refreshing = undefined; }
+  }
+  private async refreshOnce(): Promise<ConfiguredCatalogModel[]> {
     const models = await this.discoverModels();
     this.upstreamModels.clear();
-    const registered = this.projectWithSettings(projectCatalog(models), settings);
+    const registered = this.projectWithSettings(projectCatalog(models), this.latestSettings ?? { defaults: {}, models: {} });
     this.currentModels = registered;
     writeJsonAtomic(this.cachePath, {
       schemaVersion: 2,

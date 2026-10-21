@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate the outer tool-projection cache against tool values, including in-place name/schema/array edits, before reusing bridge schemas and prompt guidance.
+- Protect saved mappings and live leases during asynchronous session cleanup; add soft count/byte budgets, orphan grace, bounded background batches, lifecycle retries and status accounting. Conservative mode remains the default.
+- Limit idle runtimes with an LRU cap (default two), deduplicate concurrent catalog discovery/refresh and remove stale catalog entries.
+- Add opt-in timing diagnostics with 128 in-memory samples, disabled by default and without conversation content.
+- Bundle required upstream code and supervisor assets into a standalone package with no production dependencies; verify clean installation and offline OMP loading. The separately downloaded Google runtime is unchanged.
 - Cache value-validated system/tool fingerprints across regenerated containers, with per-runtime memory limits and teardown clearing; preserve exact digests and schema-mutation detection.
 - Replace blocking session-registry writes with asynchronous locked merge/atomic-rename transactions. Await cancellation checkpoints, initialization and active writes at lifecycle boundaries; prevent mode-change/queued-request deadlocks.
 

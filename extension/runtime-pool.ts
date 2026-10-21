@@ -4,11 +4,12 @@ export class SessionRuntimePool<T> {
   private readonly entries = new Map<string | undefined, T>();
   private readonly leases = new Map<T, number>();
   private readonly timers = new Map<T, NodeJS.Timeout>();
+  private readonly disposing = new Set<Promise<void>>();
 
   constructor(
     private readonly create: () => T,
     private readonly dispose: (entry: T) => Promise<void>,
-    private readonly idle: { timeoutMs: number; canDispose?: (entry: T) => boolean } = { timeoutMs: 0 },
+    private readonly idle: { timeoutMs: number; maxIdleEntries?: number; canDispose?: (entry: T) => boolean } = { timeoutMs: 0 },
   ) {}
 
   get(sessionId?: string): T {
@@ -17,7 +18,9 @@ export class SessionRuntimePool<T> {
       entry = this.create();
       this.entries.set(sessionId, entry);
     }
+    this.entries.delete(sessionId); this.entries.set(sessionId, entry);
     this.schedule(sessionId, entry);
+    this.trim(entry);
     return entry;
   }
 
@@ -37,7 +40,20 @@ export class SessionRuntimePool<T> {
       const count = (this.leases.get(value) ?? 1) - 1;
       if (count > 0) this.leases.set(value, count); else this.leases.delete(value);
       if (this.entries.get(sessionId) === value) this.schedule(sessionId, value);
+      this.trim();
     } };
+  }
+  private trim(protectedEntry?: T) {
+    const cap = this.idle.maxIdleEntries ?? 0;
+    if (!cap) return;
+    const idle = [...this.entries].filter(([, entry]) => !this.leases.has(entry) && this.idle.canDispose?.(entry) !== false);
+    let remaining = idle.length;
+    for (const [key, entry] of idle) {
+      if (remaining <= cap) break;
+      if (entry === protectedEntry) continue;
+      void this.close(key).catch(() => {});
+      remaining--;
+    }
   }
 
   private clearTimer(entry: T) {
@@ -67,7 +83,12 @@ export class SessionRuntimePool<T> {
     const entry = this.entries.get(sessionId);
     // Detach before awaiting teardown so a new turn cannot reuse a closed runtime.
     this.entries.delete(sessionId);
-    if (entry) { this.clearTimer(entry); this.leases.delete(entry); await this.dispose(entry); }
+    if (entry) {
+      this.clearTimer(entry); this.leases.delete(entry);
+      const pending = this.dispose(entry);
+      this.disposing.add(pending);
+      try { await pending; } finally { this.disposing.delete(pending); }
+    }
   }
 
   async closeAll(): Promise<void> {
@@ -75,5 +96,6 @@ export class SessionRuntimePool<T> {
     this.entries.clear();
     for (const entry of entries) { this.clearTimer(entry); this.leases.delete(entry); }
     await Promise.allSettled(entries.map(entry => this.dispose(entry)));
+    await Promise.allSettled(this.disposing);
   }
 }

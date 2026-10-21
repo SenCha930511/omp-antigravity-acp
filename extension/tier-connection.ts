@@ -6,6 +6,7 @@ import { installSessionRouting, type NativeToolMode } from "./tool-routing.ts";
 import { showAcpUpdate } from "./activity-presentation.ts";
 import { parseSessionUsage, usageDelta, type SessionUsage } from "./usage-accounting.ts";
 import type { SessionCleanup } from "./session-cleanup.ts";
+import type { Diagnostics } from "./diagnostics.ts";
 
 export class TierConnection extends AntigravityAcpConnection {
   confirmedThinking: { model: string; effort: string } | undefined;
@@ -20,14 +21,19 @@ export class TierConnection extends AntigravityAcpConnection {
   private readonly usageCaptures = new Map<string, { text: string }>();
   private readonly usageCommands = new Set<string>();
   private cleanup?: SessionCleanup;
+  private diagnostics?: Diagnostics;
+  private readonly firstOutput = new Map<string, number>();
+  private readonly pendingOwned = new Set<string>();
+  private ownershipRetry?: Promise<void>;
   private cleanupLeases = new Map<string, string>();
   toolRouting: { nativeTools: NativeToolMode; channel: "pending" | "system-append" | "legacy-prompt" } | undefined;
 
-  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean; ompUsageMode?: "auto" | "off"; ompCleanup?: SessionCleanup }) {
+  constructor(options: ConstructorParameters<typeof AntigravityAcpConnection>[0] & { ompNativeTools?: NativeToolMode; ompDebugToolUpdates?: boolean; ompUsageMode?: "auto" | "off"; ompCleanup?: SessionCleanup; ompDiagnostics?: Diagnostics }) {
     super(options);
     this.cleanup = options.ompCleanup;
+    this.diagnostics = options.ompDiagnostics;
     this.cleanup?.start();
-    void this.process.exited.then(() => this.releaseCleanupLeases());
+    void this.process.exited.then(() => this.releaseCleanupLeases()).catch(() => {});
     this.debugToolUpdates = options.ompDebugToolUpdates ?? false;
     this.usageMode = options.ompUsageMode ?? "auto";
     this.setHandlers({ ...options.handlers, onUpdate: async notification => {
@@ -52,6 +58,10 @@ export class TierConnection extends AntigravityAcpConnection {
         }
         return;
       }
+      if (update.sessionUpdate === "agent_message_chunk" && this.firstOutput.has(notification.sessionId)) {
+        this.diagnostics?.record("acp.first-output", performance.now() - this.firstOutput.get(notification.sessionId)!);
+        this.firstOutput.delete(notification.sessionId);
+      }
       if (showAcpUpdate(notification, this.debugToolUpdates)) await options.handlers?.onUpdate?.(notification);
     } });
     if (options.ompNativeTools) {
@@ -70,25 +80,25 @@ export class TierConnection extends AntigravityAcpConnection {
   override async newSession(...args: Parameters<AntigravityAcpConnection["newSession"]>) {
     const session = await super.newSession(...args);
     if (this.cleanup) {
-      try { this.cleanupLeases.set(session.sessionId, this.cleanup.acquire(session.sessionId, true, this.process.pid!)); }
-      catch { console.warn("[ACP cleanup] Could not register new session; preserving its files."); }
+      try { this.cleanupLeases.set(session.sessionId, await this.cleanup.acquire(session.sessionId, true, this.process.pid!)); }
+      catch { this.pendingOwned.add(session.sessionId); console.warn("[ACP cleanup] Registration deferred; preserving session files and retrying."); }
     }
     this.usageBaselines.set(session.sessionId, { input: 0, completion: 0, thinking: 0, cached: 0, total: 0 });
     return session;
   }
 
-  private protectSession(id: string) {
+  private async protectSession(id: string) {
     if (this.cleanup && !this.cleanupLeases.has(id)) {
       // Lease before the resume/load RPC, including while the server replays.
-      this.cleanupLeases.set(id, this.cleanup.acquire(id, false, this.process.pid!));
+      this.cleanupLeases.set(id, await this.cleanup.acquire(id, false, this.process.pid!));
     }
   }
   override async resumeSession(...args: Parameters<AntigravityAcpConnection["resumeSession"]>) {
-    this.protectSession(args[0]);
+    await this.protectSession(args[0]);
     return super.resumeSession(...args);
   }
   override async loadSession(...args: Parameters<AntigravityAcpConnection["loadSession"]>) {
-    this.protectSession(args[0]);
+    await this.protectSession(args[0]);
     return super.loadSession(...args);
   }
   private dropSessionState(id: string) {
@@ -97,32 +107,45 @@ export class TierConnection extends AntigravityAcpConnection {
     this.usageBaselines?.delete(id);
     this.usageCommands?.delete(id);
   }
-  retireForReplacement(key: string, id: string) {
+  async retireForReplacement(key: string, id: string) {
     this.dropSessionState(id);
-    try { this.cleanup?.retire(key, id); } catch { /* Preserve files if bookkeeping is unavailable. */ }
+    try { await this.cleanup?.retire(key, id); } catch { /* Retried by the cleanup ledger. */ }
   }
-  confirmReplacement(key: string, id: string) {
-    try { this.cleanup?.confirm(key, id); } catch { /* Retry cleanup on a later successful turn. */ }
+  async confirmReplacement(key: string, id: string) {
+    try { await this.cleanup?.confirm(key, id, true); } catch { /* Retry cleanup on a later successful turn. */ }
   }
-  discardSession(id: string) {
+  async discardSession(id: string) {
     // Explicitly disposable discovery sessions need no model replacement.
-    this.retireForReplacement(`discovery:${id}`, id);
-    this.confirmReplacement(`discovery:${id}`, "discovery-complete");
+    await this.retireForReplacement(`discovery:${id}`, id);
+    await this.confirmReplacement(`discovery:${id}`, "discovery-complete");
   }
-  private releaseCleanupLeases() {
+  private async releaseCleanupLeases() {
     if (this.process.alive) return;
+    await this.retryOwnership();
     for (const [id, token] of this.cleanupLeases ?? []) {
-      try { this.cleanup?.release(token); this.cleanupLeases.delete(id); } catch { /* Live PID leases fail closed. */ }
+      try { await this.cleanup?.release(token, true); this.cleanupLeases.delete(id); } catch { /* Live PID leases fail closed. */ }
     }
   }
   override async close() {
     await super.close();
-    this.releaseCleanupLeases();
+    await this.releaseCleanupLeases();
     this.contextUsage?.clear();
     this.usageStatus?.clear();
     this.usageBaselines?.clear();
     this.usageCommands?.clear();
     this.usageCaptures?.clear();
+    this.firstOutput?.clear();
+  }
+  private async retryOwnership() {
+    if (this.ownershipRetry) return this.ownershipRetry;
+    const pending = this.retryOwnershipOnce(); this.ownershipRetry = pending;
+    try { await pending; } finally { if (this.ownershipRetry === pending) this.ownershipRetry = undefined; }
+  }
+  private async retryOwnershipOnce() {
+    for (const id of this.pendingOwned ?? []) {
+      try { this.cleanupLeases.set(id, await this.cleanup!.acquire(id, true, this.process.pid!)); this.pendingOwned.delete(id); }
+      catch { /* Unknown data stays protected if durable registration is unavailable. */ }
+    }
   }
 
   private async readUsage(sessionId: string, signal?: AbortSignal) {
@@ -144,7 +167,11 @@ export class TierConnection extends AntigravityAcpConnection {
   override async prompt(request: Parameters<AntigravityAcpConnection["prompt"]>[0], signal?: AbortSignal) {
     this.activePrompts++;
     const id = request.sessionId;
-    try { this.cleanup?.touch(id); } catch { /* Cleanup must not affect inference. */ }
+    await this.retryOwnership();
+    let abortedAt: number | undefined;
+    const aborted = () => { abortedAt = performance.now(); };
+    signal?.addEventListener("abort", aborted, { once: true });
+    try { await this.cleanup?.touch(id); } catch { /* Cleanup must not affect inference. */ }
     try {
       const queryUsage = process.env.OMP_ACP_USAGE !== "off" && this.usageMode !== "off" && this.usageCommands.has(id);
       if (queryUsage && !this.usageBaselines.has(id)) {
@@ -153,7 +180,11 @@ export class TierConnection extends AntigravityAcpConnection {
           if (baseline) this.usageBaselines.set(id, baseline);
         } catch { /* Restore baseline is optional; never count the prior session as this turn. */ }
       }
+      const started = performance.now();
+      this.firstOutput?.set(id, started);
       const response = await super.prompt(request, signal);
+      this.diagnostics?.record("acp.prompt", performance.now() - started);
+      if (abortedAt !== undefined && ["cancelled", "end_turn"].includes(response.stopReason)) this.diagnostics?.record("acp.cancel-confirmation", performance.now() - abortedAt);
       const withContext = <T extends { _meta?: Record<string, unknown> }>(value: T): T => {
         const context = this.contextUsage.get(id);
         return context ? { ...value, _meta: { ...value._meta, ompContextTokens: context.used } } : value;
@@ -176,8 +207,10 @@ export class TierConnection extends AntigravityAcpConnection {
         return withContext(response);
       }
     } finally {
+      signal?.removeEventListener("abort", aborted);
+      this.firstOutput?.delete(id);
       this.activePrompts--;
-      try { this.cleanup?.touch(id); } catch { /* Keep accounting optional. */ }
+      try { await this.cleanup?.touch(id); } catch { /* Keep accounting optional. */ }
     }
   }
 

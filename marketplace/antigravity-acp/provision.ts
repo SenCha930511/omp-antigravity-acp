@@ -19,6 +19,10 @@ async function ready(root: string): Promise<boolean> {
     if (metadata.name !== ADAPTER_NAME || metadata.version !== ADAPTER_VERSION) return false;
     await fs.access(path.join(installed, "extension/index.ts"));
     await fs.access(path.join(installed, "extension/runtime.mjs"));
+    if (metadata.ompAcpBundle === 1) {
+      await fs.access(path.join(installed, "extension/assets/src/acp/supervisor.mjs"));
+      await fs.access(path.join(installed, "extension/assets/runtime-manifest.json"));
+    }
     return true;
   } catch {
     return false;

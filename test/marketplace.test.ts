@@ -8,9 +8,12 @@ import { ADAPTER_NAME, ADAPTER_VERSION, ensureAdapter } from "../marketplace/ant
 async function fakeInstall(directory: string) {
   const root = path.join(directory, "node_modules", ADAPTER_NAME);
   await fs.mkdir(path.join(root, "extension"), { recursive: true });
-  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: ADAPTER_NAME, version: ADAPTER_VERSION }));
+  await fs.writeFile(path.join(root, "package.json"), JSON.stringify({ name: ADAPTER_NAME, version: ADAPTER_VERSION, ompAcpBundle: 1 }));
   await fs.writeFile(path.join(root, "extension/index.ts"), "export default () => {};");
   await fs.writeFile(path.join(root, "extension/runtime.mjs"), "export {};");
+  await fs.mkdir(path.join(root, "extension/assets/src/acp"), { recursive: true });
+  await fs.writeFile(path.join(root, "extension/assets/src/acp/supervisor.mjs"), "export {};");
+  await fs.writeFile(path.join(root, "extension/assets/runtime-manifest.json"), "{}");
 }
 
 test("marketplace provision shares concurrent work and warm loads stay offline", async () => {
@@ -32,6 +35,15 @@ test("failed marketplace preparation is cleaned and can be retried", async () =>
     await assert.rejects(ensureAdapter(root, async () => { throw Error("offline"); }), /offline/);
     assert.deepEqual(await fs.readdir(root), []);
     await ensureAdapter(root, fakeInstall);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test("standalone cache with missing supervisor assets is rejected without running npm", async () => {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "omp-marketplace-unit-"));
+  try {
+    await ensureAdapter(root, fakeInstall);
+    await fs.rm(path.join(root, ADAPTER_VERSION, "node_modules", ADAPTER_NAME, "extension/assets/src/acp/supervisor.mjs"));
+    await assert.rejects(ensureAdapter(root, async () => { throw Error("must stay offline"); }), /incomplete/);
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 });
 

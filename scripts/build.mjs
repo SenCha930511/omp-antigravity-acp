@@ -7,6 +7,10 @@ import { build } from "esbuild";
 const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const upstream = path.dirname(require.resolve("pi-antigravity-acp-provider/package.json"));
+const assets = path.join(root, "extension/assets");
+await fs.mkdir(path.join(assets, "src/acp"), { recursive: true });
+await fs.copyFile(path.join(upstream, "src/acp/supervisor.mjs"), path.join(assets, "src/acp/supervisor.mjs"));
+await fs.copyFile(path.join(upstream, "runtime-manifest.json"), path.join(assets, "runtime-manifest.json"));
 const exports = [
   ["createAntigravityProvider", "provider.ts"],
   ["AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND", "runtime.ts"],
@@ -40,9 +44,8 @@ const result = await build({
   // on the consuming machine rather than embedded from the build machine.
   banner: { js: [
     'import { createRequire as __ompCreateRequire } from "node:module";',
-    'import { pathToFileURL as __ompPathToFileURL } from "node:url";',
     'const require = __ompCreateRequire(import.meta.url);',
-    'const __ompAssetURL = (specifier) => __ompPathToFileURL(require.resolve(specifier)).href;',
+    'const __ompAssetURL = (specifier) => new URL(specifier.replace("pi-antigravity-acp-provider/", "./assets/"), import.meta.url).href;',
   ].join("\n") },
   external: ["@aws-sdk/client-s3"],
   plugins: [{
@@ -217,6 +220,9 @@ const result = await build({
           contents = contents.replace(anchor, replacement);
         }
         contents = `import { createStructuredFingerprintMemo } from ${JSON.stringify(path.join(root, "extension/structured-fingerprint.ts"))};\n` + contents;
+        contents = contents.replaceAll("binding.connection.retireForReplacement?.(", "await binding.connection.retireForReplacement?.(")
+          .replaceAll("binding.connection.confirmReplacement?.(", "await binding.connection.confirmReplacement?.(")
+          .replaceAll("binding.connection.discardSession?.(", "await binding.connection.discardSession?.(");
         contents = `import { drainCancelledTurn } from ${JSON.stringify(path.join(root, "extension/turn-cancellation.ts"))};\n` + contents;
         contents = `import { createHistoryFingerprintMemo } from ${JSON.stringify(path.join(root, "extension/history-fingerprint.ts"))};\nconst ompMessageFingerprintMemo = createHistoryFingerprintMemo();\n` + contents;
         return { contents, loader: "ts" };

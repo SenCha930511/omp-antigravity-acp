@@ -23,6 +23,12 @@ try {
     assert.equal(saved.mode, mode.split(" ")[0]);
     notices.pop();
   }
+  await command.handler("cleanup budget 4 16", context);
+  const budget = JSON.parse(await fs.readFile(path.join(temporary, "cleanup.json"), "utf8"));
+  assert.equal(budget.maxSessions, 4); assert.equal(budget.maxBytes, 16 * 1024 * 1024); notices.pop();
+  for (const setting of ["on", "reset", "off"]) { await command.handler(`diagnostics ${setting}`, context); notices.pop(); }
+  assert.equal(JSON.parse(await fs.readFile(path.join(temporary, "diagnostics.json"), "utf8")).enabled, false);
+  await assert.rejects(command.handler("diagnostics invalid", context), /Usage:/);
   assert.equal(JSON.parse(await fs.readFile(path.join(temporary, "cleanup.json"), "utf8")).idleDays, 3);
   for (const invalid of ["typo", "timeout 0", "timeout NaN", "off 7", "timeout 7 extra"]) {
     await assert.rejects(command.handler(`cleanup ${invalid}`, context));

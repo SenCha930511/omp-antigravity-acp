@@ -15,9 +15,11 @@ The original project's ACP transport, Google-managed authentication, runtime ins
 
 This derivative adds OMP-specific provider registration, confirmed model/thinking selectors, lazy catalog loading, OMP-first tool instructions, API-equivalent pricing and per-session runtime lifecycle fixes for planning/refinement.
 
-The repository keeps the OMP adapter sources separately and installs upstream version **0.1.15** as an unmodified, pinned npm dependency. It does not contain a copy of upstream's Git history. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the original copyright and license notice.
+The repository keeps the OMP adapter sources separately and uses upstream version **0.1.15** as an unmodified, pinned build dependency. The standalone artifact bundles its runtime code, supervisor and signed runtime manifest; end users need no production npm dependencies. It does not contain a copy of upstream's Git history. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the original copyright and license notice.
 
 ## Status
+
+The current source includes unreleased resource-management and standalone-packaging improvements; npm/marketplace 0.1.19 has not received them yet. New settings below apply after installing that build.
 
 Version 0.1.19 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
@@ -56,7 +58,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.19** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.19** prebuilt npm adapter on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. The published 0.1.19 still installs production dependencies and needs roughly **150 MiB**. The unreleased standalone build bundles the required code and supervisor assets with no production dependencies: a clean test installation occupied **2.6 MiB** (473 KiB tarball). This excludes the separately downloaded Google runtime. First preparation needs internet access; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -164,7 +166,9 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 | `/antigravity-acp cleanup` | Show cleanup mode/deadline and check eligible local sessions |
 | `/antigravity-acp cleanup off` | Disable automatic session-file deletion |
 | `/antigravity-acp cleanup conservative` | Delete confirmed replaced/disposable sessions only (default) |
-| `/antigravity-acp cleanup timeout DAYS` | Also delete inactive owned sessions after DAYS (default 7) |
+| `/antigravity-acp cleanup timeout DAYS` | Also delete inactive unmapped owned sessions after DAYS (default 7) |
+| `/antigravity-acp cleanup budget MAX_SESSIONS MAX_MIB` | Set soft session-count/size budgets; `0` disables each limit |
+| `/antigravity-acp diagnostics [on\|off\|reset]` | Show bounded timing samples, enable/disable collection, or clear samples (default off) |
 | `/antigravity-acp tools` | Available and omitted OMP tool schemas after a request |
 | `/antigravity-acp refresh` | Explicit network discovery and local catalog refresh |
 | `/antigravity-acp native-tools prefer` | Prefer OMP tools; retain native built-ins (default) |
@@ -213,7 +217,7 @@ Never include those user data directories, OAuth callback URLs, account identifi
 
 Each runtime also keeps bounded, value-validated system-message and tool-definition snapshots. Equivalent new containers reuse the existing canonical fingerprint/tool projection fingerprint; every selected field is still checked, including in-place schema edits and non-enumerable schema properties. Unsupported shapes fall back to the original algorithm. Each of the two caches holds one entry, capped at 32,768 value nodes, 131,072 primitive snapshot items and 2,097,152 UTF-16 code units in keys/string values; these are local snapshot limits, not model tokens or context limits. Tool execution closures are not retained, and runtime teardown clears the caches.
 
-Session mappings use asynchronous file I/O and nonblocking cross-process lock retries, with ordered read/merge/atomic-rename writes compatible with existing `sessions.json` files. Cancellation checkpoints are awaited before the turn releases its queue; shutdown waits for active checkpoint writes. This keeps the event loop responsive during session-registry lock contention without acknowledging an unwritten checkpoint. Malformed JSON/non-array registries and I/O failures are reported rather than silently overwritten. Other configuration/cleanup I/O is unchanged. This does not remove Google's cancellation-confirmation wait. See the [Esc performance implementation and measurements](docs/esc-session-performance-research.md#production-implementation).
+Session mappings use asynchronous file I/O and nonblocking cross-process lock retries, with ordered read/merge/atomic-rename writes compatible with existing `sessions.json` files. Cancellation checkpoints are awaited before the turn releases its queue; shutdown waits for active checkpoint writes. This keeps the event loop responsive during session-registry lock contention without acknowledging an unwritten checkpoint. Malformed JSON/non-array registries and I/O failures are reported rather than silently overwritten. Cleanup registry transactions, file scans and deletion also use asynchronous I/O; small command/configuration reads remain synchronous. This does not remove Google's cancellation-confirmation wait. See the [Esc performance implementation and measurements](docs/esc-session-performance-research.md#production-implementation) and [resource-management notes](docs/resource-management.md).
 
 History comparisons reuse SHA-256 digests for unchanged large, simple messages. Every lookup validates the selected live fields against an independent snapshot, including nested tool arguments and in-place text edits; object identity alone never establishes a match. Small messages (below 2,048 characters per text/image/thinking string), complex payloads and unsupported objects use the original algorithm. The digest format and all checks after asynchronous work remain unchanged, so saved sessions stay compatible. Weak keys allow snapshots to be reclaimed when OMP drops old messages, including after compaction. This reduces local comparison work; it does not increase Google's cache-hit rate or guarantee faster model generation. See the [offline benchmarks and memory measurements](docs/history-comparison-research.md#production-integration).
 
@@ -259,7 +263,7 @@ omp config set compaction.modelThresholds '{"antigravity-acp/*":"85%"}'
 
 Merge that map with existing model-specific entries before running the command. At the example 524,288-token window, 85% triggers at 445,644 tokens, below the automatic transfer estimate budget of 475,904 tokens. OMP can also recover from local context/payload overflow errors. Google independently controls its internal agent summaries. Plugin installation does not automatically change OMP's global compaction configuration.
 
-Active sessions are reused. After five idle minutes, the adapter closes its ACP runtime, bridge and child processes; the next request tries to restore the saved server session. Active streams, outstanding ACP prompts, tools and permission waits prevent eviction. No background model prewarming, quota polling or tokenizer model download is performed.
+Active sessions are reused. After five idle minutes, the adapter closes its ACP runtime, bridge and child processes; the next request tries to restore the saved server session. It also keeps at most two idle runtimes per OMP process by default, evicting the least recently used idle entry when necessary. Active streams, outstanding ACP prompts, tools and permission waits prevent eviction. Process eviction preserves mapped session files. No background model prewarming, quota polling or tokenizer model download is performed.
 
 ### Local ACP session cleanup
 
@@ -269,28 +273,37 @@ Session-file deletion is separate from the five-minute idle process shutdown. Co
 | --- | --- |
 | `off` | Keep session files, including replaced sessions. Ownership/lease bookkeeping remains enabled so cleanup can be enabled later. |
 | `conservative` (default) | Remove an old session after its OMP history is rebuilt (for example after `/compact`), a replacement successfully completes a turn, and all registered users of the old session have released it. Disposable model-discovery sessions are also removed after their connection exits. Ordinary shutdown and idle eviction preserve resumable sessions. |
-| `timeout` | Conservative cleanup plus removal of owned sessions whose last activity exceeds `idleDays`. Default 7 days; accepts fractional days (for example `0.5` for 12 hours), with a minimum of one hour and a maximum of 3650 days. Live leases always override the deadline. |
+| `timeout` | Conservative cleanup plus removal of unmapped owned sessions whose last activity exceeds `idleDays`, or eligible unmapped sessions above a configured soft budget after the orphan grace period. Default 7 days; accepts fractional days (for example `0.5` for 12 hours), with a minimum of one hour and a maximum of 3650 days. Saved OMP mappings and live leases always override deletion. |
 
 ```text
 /antigravity-acp cleanup
 /antigravity-acp cleanup off
 /antigravity-acp cleanup conservative
 /antigravity-acp cleanup timeout 7
+/antigravity-acp cleanup budget 50 512
 ```
 
 Settings persist in `~/.omp/agent/antigravity-acp-provider/cleanup.json`:
 
 ```json
-{ "mode": "conservative", "idleDays": 7 }
+{ "mode": "conservative", "idleDays": 7, "maxSessions": 0, "maxBytes": 0, "orphanGraceDays": 1, "batchSize": 8 }
 ```
 
-Commands take effect immediately; direct file edits are read on the next cleanup check. Checks run when the cleanup service starts, after replacement/release, on the inspection command, and every 15 minutes while the service is running. OMP must be running for timed checks; the deadline is not an exact scheduled deletion time. No additional model requests, tokenizer downloads or background worker processes are used.
+The optional budgets default to disabled (`0`); the command accepts MiB and saves bytes. Size accounting uses logical file sizes rather than allocated APFS space. In `off` and `conservative`, exceeding a budget only produces a status warning. In `timeout`, budget eviction uses least-recent activity among unmapped, unleased owned sessions after `orphanGraceDays` (default 1 day, range 1 hour–3650 days). Mapped and active sessions can keep usage above the budget. The grace period applies to budget eviction; confirmed replacement and ordinary idle expiry have their own eligibility rules.
 
-Only sessions created and registered by this adapter version onward are eligible. Pre-existing/unidentified ACP sessions are preserved. The registry is separated by the resolved ACP storage root, and tracks both OMP and ACP supervisor PIDs across participating processes. Resume/load acquires a lease before replay. Busy/corrupt registries and unsafe paths defer deletion. Restart older OMP instances when upgrading: clients that do not implement these leases, or external clients manually opening the same session, are outside this coordination mechanism.
+Commands take effect immediately; direct file edits are read on the next cleanup check. Checks run when the cleanup service starts, after replacement/release, on the inspection command, and every 15 minutes while the service is running. Replacement/release persists bookkeeping before scheduling file cleanup in the background. Each batch removes at most `batchSize` sessions (default 8, range 1–100); eligible overflow schedules another batch after one second. OMP must be running for timed checks; the deadline is not an exact scheduled deletion time. No additional model requests, tokenizer downloads or background worker processes are used.
+
+Only sessions created and registered by this adapter version onward are eligible. Pre-existing/unidentified ACP sessions are preserved. All cleanup modes protect IDs in saved `sessions.json` mappings. The registry is separated by the resolved ACP storage root, and tracks both OMP and ACP supervisor PIDs across participating processes. Resume/load acquires a lease before replay; the cross-process lease lock remains held during asynchronous deletion. Busy/corrupt registries, malformed mappings and unsafe paths defer deletion. Failed lifecycle updates remain in a bounded in-memory retry queue (1024 entries) until the next successful transaction; a process crash can lose queued intentions, so deletion is never guaranteed. The status shows mapped/unmapped/active counts, logical bytes, deferred work, failures and pending updates. Restart older OMP instances when upgrading: clients that do not implement these leases, or external clients manually opening the same session, are outside this coordination mechanism.
 
 Cleanup targets only the registered UUID's `.db`, SQLite journal/WAL/SHM files, `.meta`, and `brain/<UUID>` directory under the ACP storage root (normally `~/.gemini/antigravity-acp/`; respects `GEMINI_HOME`). Symlinked targets are preserved. Credentials, global settings, shared artifacts, workspace files and OMP's own conversation history are untouched. Local deletion is permanent and does not request deletion of Google's server-side logs. The current official ACP runtime does not advertise session deletion, so this uses the inspected local layout rather than an unsupported RPC.
 
-Timeout cleanup sacrifices ACP-only reasoning/checkpoint state. The next request reconstructs a session from OMP's retained history and can incur replay latency and a different token count. Cache expiry is not assumed or guaranteed. Conservative mode avoids that tradeoff for ordinary resumable sessions; it does not bound the number of unrelated OMP conversations you keep.
+Timeout cleanup sacrifices ACP-only reasoning/checkpoint state for eligible unmapped sessions. If that session is later requested through another history source, the adapter reconstructs it from OMP's retained history and can incur replay latency and a different token count. Cache expiry is not assumed or guaranteed. Ordinary mapped conversations remain resumable in every mode; budgets cannot bound the number of mapped OMP conversations you keep.
+
+### Optional timing diagnostics
+
+Use `/antigravity-acp diagnostics on`, then `/antigravity-acp diagnostics` to inspect timings for history/tool comparisons, session initialization/restoration, checkpoint writes, prompt/first-output and cancellation confirmation. `/antigravity-acp diagnostics reset` clears samples; `off` disables collection and clears them. This is separate from the tool-status debug switch.
+
+Collection defaults to off and retains at most 128 samples in memory. Only the enabled flag persists in `diagnostics.json`; samples contain stage names and durations, without request content, account identifiers or session IDs. It sends no model/usage requests. Prompt timings include Google processing and tools, and are not a measure of local comparison cost alone.
 
 Optional environment settings, applied when OMP starts:
 
@@ -298,6 +311,7 @@ Optional environment settings, applied when OMP starts:
 | --- | --- | --- |
 | `OMP_ACP_HISTORY_BYTES` | context.json or 16 MiB | Optional byte-limit override, 64 KiB–128 MiB; independent of token window |
 | `OMP_ACP_IDLE_TIMEOUT_MS` | `300000` | Idle runtime reclamation; `0` disables it, positive values must be at least `1000` |
+| `OMP_ACP_MAX_IDLE_RUNTIMES` | `2` | Per-process idle runtime LRU limit; `0` disables the limit. Busy/leased runtimes remain protected |
 | `OMP_ACP_USAGE` | context.json or auto | `off` forces supplemental queries off, including when the saved option is auto |
 
 When automatic usage is enabled and `/usage` is advertised by the official server, the adapter queries it after each completed ACP prompt and computes a difference from the previous cumulative snapshot. A restored session first establishes a baseline so its old tokens are not charged again. These are main-agent totals and can include multiple internal model calls. Thinking tokens count toward estimated output cost. Queries are bounded by a five-second deadline; unavailable/malformed usage or a counter reset does not turn a successful model answer into a billing claim. Native ACP response usage takes priority when supplied. Query failures can cancel/retire the connection; subsequent work can restore the server session.
@@ -331,7 +345,7 @@ See the [0.1.8 context/compaction and usage benchmark](docs/context-compaction-0
 
 `npm run test:auth` uses Bun with an isolated `GEMINI_HOME`, a stubbed keychain and a stubbed OAuth flow to verify the account view (including Google-account email extraction from the stored id_token), login dialog mapping, logout cleanup, the active-request guard and the credential-store watch behind OMP-logout following (removal, automatic-disable suppression, re-login cancellation, opt-out and busy deferral) without starting ACP. Real Google login and logout change account state, so they are not part of any automated test.
 
-`npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
+`npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks the standalone assets and supervisor, verifies there are no production dependencies, measures package size, and loads its model catalog with ACP execution disabled. It removes the temporary installation afterward.
 
 `npm run test:marketplace` exercises catalog discovery, installation, automatic provider loading, offline cache reuse and uninstallation in a temporary named OMP profile. It downloads the published adapter and cleans the entire test profile afterward. Add `-- --remote` after publishing catalog changes to test the GitHub source instead of the local working tree. No model inference is performed.
 

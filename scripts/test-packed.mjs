@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, access } from "node:fs/promises";
+import { mkdtemp, rm, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -34,8 +34,14 @@ try {
   const exports = await import(pathToFileURL(runtime).href);
   assert.equal(typeof exports.AntigravityRuntime, "function");
   const require = createRequire(runtime);
-  await access(require.resolve("pi-antigravity-acp-provider/src/acp/supervisor.mjs"));
-  await access(require.resolve("pi-antigravity-acp-provider/src/acp/runtime-manifest.ts"));
+  assert.throws(() => require.resolve("pi-antigravity-acp-provider/package.json"), { code: "MODULE_NOT_FOUND" });
+  await access(path.join(installed, "extension/assets/src/acp/supervisor.mjs"));
+  await access(path.join(installed, "extension/assets/runtime-manifest.json"));
+  assert.deepEqual((await readdir(path.join(install, "node_modules"))).filter(name => !name.startsWith(".")), ["omp-antigravity-acp-provider"]);
+  assert.ok(artifact.unpackedSize < 8 * 1024 * 1024, "Standalone adapter must stay below the tested 8 MiB package budget");
+  await execute(process.execPath, [path.join(installed, "extension/assets/src/acp/supervisor.mjs"), "--command", process.execPath, "-e", "process.exit(0)"], { timeout: 10_000 });
+  console.log(`Standalone install: ${artifact.unpackedSize} unpacked bytes, no production dependencies`);
+  if (process.platform !== "win32") console.log("Allocated installation KiB:", (await execute("du", ["-sk", installed])).stdout.trim().split(/\s+/)[0]);
   console.log("Clean production install and portable runtime assets: PASS");
 
   const catalog = await execute("omp", ["models", "antigravity-acp", "--no-extensions", "-e",

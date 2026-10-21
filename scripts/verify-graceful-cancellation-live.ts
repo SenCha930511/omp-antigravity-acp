@@ -14,6 +14,7 @@ const sourceState = path.join(os.homedir(), ".omp/agent/antigravity-acp-provider
 await fs.copyFile(path.join(sourceState, "models-cache.json"), path.join(state, "models-cache.json"));
 const hooks = new Map<string, Function>();
 let provider: any;
+let command: any;
 const seen = new Map<any, Set<string>>();
 const calls: Array<{ id: string; prompt: any[]; stop?: string; started: number; aborted?: number; terminal?: number; cancels: number }> = [];
 const original = TierConnection.prototype.prompt;
@@ -38,8 +39,9 @@ try {
   // Test-only policy; leave the user's saved files untouched.
   await fs.writeFile(path.join(state, "omp-tools.json"), JSON.stringify({ nativeTools: "disabled", debugToolUpdates: false }));
   await fs.writeFile(path.join(state, "context.json"), JSON.stringify({ defaults: { usageMode: "off" }, models: {} }));
+  await fs.writeFile(path.join(state, "diagnostics.json"), JSON.stringify({ enabled: true }));
   await registerOmpAdapter({ on: (name: string, fn: Function) => hooks.set(name, fn),
-    registerProvider: (_name: string, p: any) => { provider = p; }, registerTool() {}, registerCommand() {} }, state);
+    registerProvider: (_name: string, p: any) => { provider = p; }, registerTool() {}, registerCommand(_name: string, value: any) { command = value; } }, state);
   const model = provider.models.find((m: any) => m.id === "gemini-3.8-flash"); assert.ok(model);
   for (const mode of process.argv.includes("--text-only") ? ["text"] : process.argv.includes("--tools-only") ? ["tools"] : ["text", "tools"]) {
     const id = `cancel-live-${mode}-${randomUUID()}`;
@@ -77,8 +79,15 @@ try {
       followupTotalMs: round(performance.now() - followupSubmitted) }));
     await hooks.get("session_shutdown")?.({}, { sessionManager: { getSessionId: () => id } });
   }
+  let stats: any;
+  await command.handler("diagnostics", { ui: { notify: (text: string) => { stats = JSON.parse(text); } } });
+  assert.ok(stats.enabled && stats.stages["acp.cancel-confirmation"]?.count > 0);
+  console.log(JSON.stringify({ diagnostics: stats }));
 } finally {
-  for (const [c, ids] of seen) { for (const id of ids) c.discardSession(id); await c.close(); c.cleanup?.stop(); }
+  // Only this isolated probe's mappings are disposable. Dropping them before
+  // retirement allows the new mapped-session protection to keep user data safe.
+  await fs.rm(path.join(state, "sessions.json"), { force: true });
+  for (const [c, ids] of seen) { for (const id of ids) await c.discardSession(id); await c.close(); await c.cleanup?.stop(); }
   TierConnection.prototype.prompt = original;
   if (cancelDescriptor) Object.defineProperty(TierConnection.prototype, "cancel", cancelDescriptor);
   else delete (TierConnection.prototype as any).cancel;

@@ -25,17 +25,17 @@ function factory() {
     async newSession() {
       id = randomUUID();
       fs.writeFileSync(path.join(acpDir, "conversations", `${id}.db`), "history");
-      lease = cleanup.acquire(id, true, process.pid);
+      lease = await cleanup.acquire(id, true, process.pid);
       return { sessionId: id, modes, models };
     },
     getSessionState() { return { modes, models }; },
     async prompt() { if (fail) throw new Error("synthetic replacement failure"); return { stopReason }; },
-    retireForReplacement(key: string, session: string) { cleanup.retire(key, session); },
-    confirmReplacement(key: string, session: string) { cleanup.confirm(key, session); },
+    async retireForReplacement(key: string, session: string) { await cleanup.retire(key, session); },
+    async confirmReplacement(key: string, session: string) { await cleanup.confirm(key, session); },
     async close() {
       if (!processState.alive) return;
       processState.alive = false;
-      if (lease) cleanup.release(lease);
+      if (lease) await cleanup.release(lease);
       exited({ code: 0 });
     },
     get id() { return id; },
@@ -90,14 +90,14 @@ try {
 
   const active = randomUUID();
   fs.writeFileSync(path.join(acpDir, "conversations", `${active}.db`), "owned");
-  const lease = cleanup.acquire(active, true, process.pid);
-  cleanup.retire("peer", active); cleanup.confirm("peer", randomUUID());
+  const lease = await cleanup.acquire(active, true, process.pid);
+  await cleanup.retire("peer", active); await cleanup.confirm("peer", randomUUID());
   const result = execFileSync(process.execPath, ["--input-type=module", "-e",
     'import {SessionCleanup} from ' + JSON.stringify(new URL("../extension/runtime.mjs", import.meta.url).href) + ';' +
-    'const c=new SessionCleanup(process.argv[1],process.argv[2]);console.log(c.collect());', stateDir, acpDir], { encoding: "utf8" });
+    'const c=new SessionCleanup(process.argv[1],process.argv[2]);console.log(await c.collect());', stateDir, acpDir], { encoding: "utf8" });
   assert.equal(result.trim(), "0", "A separate real OS process must honor the parent's live lease");
   assert.ok(fs.existsSync(path.join(acpDir, "conversations", `${active}.db`)));
-  cleanup.release(lease);
+  await cleanup.release(lease);
   assert.equal(fs.existsSync(path.join(acpDir, "conversations", `${active}.db`)), false);
   console.log("Separate-process cleanup respects live shared leases: PASS");
-} finally { await runtime.close(); cleanup.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+} finally { await runtime.close(); await cleanup.stop(); fs.rmSync(root, { recursive: true, force: true }); }

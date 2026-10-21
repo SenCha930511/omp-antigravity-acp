@@ -63,7 +63,7 @@ try {
   console.log(JSON.stringify({ sameSessionAfterCancel: true, cacheObserved: rows.some(r => r.cached > 0),
     unknownCacheRows: rows.filter(r => r.cached === null).length }));
 } finally {
-  for (const { c, id } of connections) { if (id) c.discardSession(id); await c.close(); }
-  cleanup.stop();
+  for (const { c, id } of connections) { if (id) await c.discardSession(id); await c.close(); }
+  await cleanup.stop();
   fs.rmSync(state, { recursive: true, force: true });
 }

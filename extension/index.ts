@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
+import { createStructuredFingerprintMemo } from "./structured-fingerprint.ts";
+import { Diagnostics, instrumentRuntime } from "./diagnostics.ts";
 import { stableTools } from "./tool-order.ts";
 import { loadContextSettings } from "./context-settings.ts";
 import { selectRuntimeModel, type PublicCatalogModel } from "./model-catalog.ts";
@@ -63,6 +65,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
   const sessionStorePath = path.join(stateDir, "sessions.json");
   const sessionStore = new AcpSessionStore(sessionStorePath);
   const cleanup = new SessionCleanup(stateDir);
+  const diagnostics = new Diagnostics(path.join(stateDir, "diagnostics.json"));
   // Count saved records from disk so /antigravity-acp account needs no runtime.
   const savedSessionCount = (): number => {
     try {
@@ -89,10 +92,14 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
   if (!Number.isSafeInteger(idleTimeoutMs) || idleTimeoutMs < 0 || (idleTimeoutMs > 0 && idleTimeoutMs < 1000)) {
     throw new Error("OMP_ACP_IDLE_TIMEOUT_MS must be 0 (disabled) or an integer of at least 1000");
   }
+  const maxIdleEntries = Number(process.env.OMP_ACP_MAX_IDLE_RUNTIMES ?? 2);
+  if (!Number.isSafeInteger(maxIdleEntries) || maxIdleEntries < 0) throw new Error("OMP_ACP_MAX_IDLE_RUNTIMES must be a nonnegative integer (0 disables the cap)");
+  const toolProjectionMemo = createStructuredFingerprintMemo();
+  let toolRevision = 0;
 
   let lastToolAudit: ToolAuditSummary | undefined;
   let cachedToolProjection: {
-    ref: readonly { name: string }[] | undefined;
+    revision: string;
     tools: { name: string }[];
     availableNames: string;
     audit: ToolAuditSummary;
@@ -107,6 +114,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
         ompDebugToolUpdates: toolPolicy.debugToolUpdates,
         ompUsageMode: contextSettings.defaults.usageMode ?? "auto",
         ompCleanup: cleanup,
+        ompDiagnostics: diagnostics,
       });
       connections.add(connection);
       ownedConnections.add(connection);
@@ -116,12 +124,13 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
       });
       return connection;
     }, permissionMode, sessionStore);
+    instrumentRuntime(runtime, diagnostics);
     return {
       runtime,
       provider: createAntigravityProvider(runtime).provider,
       isBusy: () => [...ownedConnections].some(connection => connection.activePrompts > 0),
     };
-  }, bundle => bundle.runtime.close(), { timeoutMs: idleTimeoutMs, canDispose: bundle => !bundle.isBusy() });
+  }, bundle => bundle.runtime.close(), { timeoutMs: idleTimeoutMs, maxIdleEntries, canDispose: bundle => !bundle.isBusy() });
 
   const sessionIdOf = (ctx: OmpCommandContext | undefined): string | undefined => ctx?.sessionManager?.getSessionId?.();
   pi.on("session_shutdown", async (_event: unknown, ctx: OmpCommandContext) => {
@@ -132,6 +141,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
       await runtimes.closeAll();
     }
     await sessionStore.flush();
+    if (!runtimes.values().length) await cleanup.stop();
   });
 
   function syncProviderRegistration() {
@@ -192,6 +202,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
       contextPath,
       toolPolicyPath,
       cleanup,
+      diagnostics,
       connections,
       auth,
       catalog: catalogStore,
@@ -244,10 +255,9 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
           let tools: Array<{ name: string }>;
           let availableNames: string;
           const cached = cachedToolProjection;
-          // Hosts may rebuild the tools array each turn; equal contents hit.
-          if (cached && (cached.ref === inputTools ||
-              (cached.ref !== undefined && cached.ref.length === inputTools.length &&
-                inputTools.every((tool, index) => tool === cached.ref![index])))) {
+          const revision = toolProjectionMemo(inputTools, () => String(++toolRevision));
+          // Validate live definitions, including mutation of the same array.
+          if (cached && cached.revision === revision) {
             tools = cached.tools;
             availableNames = cached.availableNames;
             lastToolAudit = cached.audit;
@@ -265,7 +275,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
               available: available.map(tool => tool.name),
               omitted,
             };
-            cachedToolProjection = { ref: inputTools, tools, availableNames, audit: lastToolAudit };
+            cachedToolProjection = { revision, tools, availableNames, audit: lastToolAudit };
           }
           const routedContext = {
             ...context,
@@ -281,7 +291,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
           void (async () => {
             try {
               if (options?.signal?.aborted) throw new Error("ACP request cancelled before startup");
-              await prepareRuntime();
+              await diagnostics.measure("runtime.prepare", prepareRuntime);
               if (options?.signal?.aborted) throw new Error("ACP request cancelled during startup");
               if (!catalogStore.upstreamModels.has(model.id)) await catalogStore.refresh(contextSettings);
               const original = catalogStore.upstreamModels.get(model.id);

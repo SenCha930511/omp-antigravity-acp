@@ -1,6 +1,7 @@
 node_modules/
 .runtime/
 extension/runtime.mjs
+extension/assets/
 THIRD_PARTY_LICENSES.txt
 *.tgz
 *.log
