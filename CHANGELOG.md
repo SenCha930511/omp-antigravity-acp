@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.19 — 2026-10-21
 
 - Prevent new or edited user requests from being swallowed by a pending tool/permission continuation after interruption.
 - Reuse ACP sessions after acknowledged cancellation when accepted history and partial output match; queue new requests behind cancellation and rebuild only on uncertain/edited state or forced close.
