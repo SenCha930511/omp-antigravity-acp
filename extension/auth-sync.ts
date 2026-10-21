@@ -27,16 +27,9 @@ export const keychain = {
       return true;
     } catch { return false; }
   },
-  // Extract only the email claim from the ACP item's stored id_token. The
-  // token bytes stay in this process and are never logged or persisted; the
-  // agy CLI's separate keychain item is never read.
-  accountEmail(): string | undefined {
-    if (process.platform !== "darwin") return undefined;
-    try {
-      const raw = execFileSync("/usr/bin/security", ["find-generic-password", "-s", "gemini", "-a", "antigravity-acp", "-w"], { timeout: 3000 });
-      return emailFromTokenJson(raw.toString("utf8"));
-    } catch { return undefined; }
-  },
+  // Never read the stored secret: the item's ACL does not authorize the
+  // security CLI, so every `find-generic-password -w` would pop the macOS
+  // keychain password dialog. Only attribute-only lookups are prompt-free.
 };
 
 function emailFromTokenJson(raw: string): string | undefined {
@@ -49,13 +42,14 @@ function emailFromTokenJson(raw: string): string | undefined {
   } catch { return undefined; }
 }
 
-// The signed-in Google account, from the ACP server's own stored token. The
-// token file is preferred because it needs no keychain access.
+// The signed-in Google account, from the ACP server's token file only.
+// Keychain-stored tokens report no email: reading the macOS keychain secret
+// would require the account password on every call, so that path is removed.
 export function antigravityAccountEmail(): string | undefined {
   try {
     return emailFromTokenJson(fs.readFileSync(path.join(resolveAntigravityAcpDirectory(), "acp_token.json"), "utf8"));
-  } catch { /* keychain storage or signed out */ }
-  return keychain.accountEmail();
+  } catch { /* no token file */ }
+  return undefined;
 }
 
 // Timing knobs for following OMP-side logouts; mutable so offline tests can

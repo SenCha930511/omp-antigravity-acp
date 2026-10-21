@@ -1,6 +1,10 @@
 # Changelog
 
 
+## 0.1.18 — 2026-10-21
+
+- Removed the macOS keychain secret read behind the Google account email display. When Antigravity stores its OAuth token in the keychain (no token file), every `/antigravity-acp account` or login confirmation read the keychain item's secret via `security find-generic-password -w`, which pops the macOS keychain password dialog each time because the security CLI is not in the item's ACL. The adapter never reads that secret now: the email still appears when the ACP token file exists, and `/antigravity-acp account` reports `signed in (token in macOS keychain; email not read)` instead, using prompt-free attribute lookups only.
+
 ## 0.1.17 — 2026-10-21
 
 - Lazy command handling: `/antigravity-acp usage`, `refresh`, `account` and permission validation no longer instantiate an idle AntigravityRuntime; `account` reports the saved-session count and requested permission mode from stored state, and logout completes even when the runtime pool is empty (session store and credentials are cleared directly instead of creating a runtime just to log it out).

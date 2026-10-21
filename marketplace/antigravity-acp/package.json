@@ -1,6 +1,6 @@
 {
   "name": "omp-antigravity-acp-provider",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "private": true,
   "description": "Marketplace launcher for the published OMP Antigravity ACP adapter",
   "license": "MIT",

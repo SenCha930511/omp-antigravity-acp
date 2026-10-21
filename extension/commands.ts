@@ -1,6 +1,5 @@
 import { describeCredentialStorage, inspectAntigravityAuth, savePermissionMode } from "./runtime.mjs";
-import { antigravityAccountEmail, authReady, formatLogoutSummary, ompCredentialSummary, type OmpAuthCoordinator, type OmpCommandContext } from "./auth-sync.ts";
-import { resolveContextOptions, saveContextSettings, updateContextSettings, type ContextSettings } from "./context-settings.ts";
+import { antigravityAccountEmail, authReady, formatLogoutSummary, keychain, ompCredentialSummary, type OmpAuthCoordinator, type OmpCommandContext } from "./auth-sync.ts";
 import { parseNativeToolMode, type NativeToolMode } from "./tool-routing.ts";
 import { saveToolPolicy, type ToolPolicy } from "./tool-policy.ts";
 import type { CatalogStore, ConfiguredCatalogModel } from "./catalog-store.ts";
@@ -216,7 +215,7 @@ export function createAntigravityCommandHandler(deps: CommandControllerDeps) {
       // fields, with OMP-specific lines in the same style.
       ctx.ui.notify([
         "Antigravity ACP account",
-        `Google account: ${antigravityAccountEmail() ?? "not signed in"}`,
+        `Google account: ${antigravityAccountEmail() ?? (keychain.present() === true ? "signed in (token in macOS keychain; email not read)" : "not signed in")}`,
         `Authentication: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}`,
         `Credential storage (preflight): ${describeCredentialStorage()}`,
         `OMP marker record: ${marker}`,
