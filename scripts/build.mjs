@@ -58,6 +58,11 @@ const result = await build({
         if (file !== path.join(upstream, "src/runtime.ts")) return;
         const patches = [
           {
+            name: "validated message fingerprint memo",
+            anchor: 'return createHash("sha256").update(canonicalJson(value)).digest("hex");',
+            replacement: 'return ompMessageFingerprintMemo(message, value, () => createHash("sha256").update(canonicalJson(value)).digest("hex"));',
+          },
+          {
             name: "context",
             anchor: "buildPromptParts(context, fresh, unseenStart)",
             replacement: "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })",
@@ -156,6 +161,7 @@ const result = await build({
           contents = contents.replace(patch.anchor, patch.replacement);
         }
         contents = `import { drainCancelledTurn } from ${JSON.stringify(path.join(root, "extension/turn-cancellation.ts"))};\n` + contents;
+        contents = `import { createHistoryFingerprintMemo } from ${JSON.stringify(path.join(root, "extension/history-fingerprint.ts"))};\nconst ompMessageFingerprintMemo = createHistoryFingerprintMemo();\n` + contents;
         return { contents, loader: "ts" };
       });
       builder.onLoad({ filter: /\/src\/acp\/connection\.ts$/ }, async ({ path: file }) => {

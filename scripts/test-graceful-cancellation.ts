@@ -50,9 +50,9 @@ function fixture() {
     for await (const event of r.stream(model, { messages, tools: [] }, { sessionId: "test", signal }).stream) events.push(structuredClone(event));
     return events;
   }
-  async function held(r: any, signal?: AbortSignal) {
+  async function held(r: any, signal?: AbortSignal, messages = [user("OLD")]) {
     holdNext = true; ready = Promise.withResolvers<any>();
-    const result = run(r, [user("OLD")], signal);
+    const result = run(r, messages, signal);
     const connection = await ready.promise;
     return { result, connection, binding: [...r.resolvedBindings][0] as any };
   }
@@ -144,6 +144,23 @@ for (const reason of ["edited", "missing-partial", "timeout"]) {
   } finally { await f.close(); }
 }
 console.log("Confirmed cancellation, queued new requests, tools/permissions, saved checkpoints and unsafe-state fallback: PASS");
+
+// Exercise real memo entries across cancellation with the same host objects.
+// In-place historical edits must still force reconstruction after a cache hit.
+for (const edited of [false, true]) {
+  const f = fixture();
+  try {
+    const r = f.create(), history = user("LARGE_HISTORY".repeat(1000));
+    const old = await f.held(r, undefined, [history]);
+    if (edited) history.content += "EDITED_IN_PLACE";
+    const next = await f.run(r, [history, partial(), user("NEW_AFTER_CACHED_HISTORY")]);
+    await old.result;
+    assert.ok(next.some(e => e.type === "done"));
+    assert.equal(f.connections.length, edited ? 2 : 1);
+    assert.ok(JSON.stringify(f.connections.at(-1).prompts.at(-1)).includes("NEW_AFTER_CACHED_HISTORY"));
+  } finally { await f.close(); }
+}
+console.log("Cached long history reuses acknowledged sessions; in-place edits force reconstruction: PASS");
 
 {
   const base: any = Object.getPrototypeOf(TierConnection.prototype);

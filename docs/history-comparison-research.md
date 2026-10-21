@@ -1,6 +1,6 @@
 # Faster history comparison research — 2026-10-21
 
-Research/prototype only; the installed 0.1.19 runtime and production comparison code are unchanged. No inference, Google quota, user-history reads or user-configuration edits are involved.
+The initial research below used a prototype. The production integration and its separate measurements are recorded at the end. The installed 0.1.19 package remains unchanged until a new release/install. No inference, Google quota, user-history reads or user-configuration edits are involved.
 
 ## Current cost and alternatives
 
@@ -46,4 +46,23 @@ This confirms that the installed OMP host can preserve message identity across n
 
 Prefer a guarded per-message digest cache for large simple payloads, with value-snapshot validation on every read and the original algorithm as fallback. Preserve all post-await revalidation and the current SHA-256 digest format so saved ACP mappings remain compatible. Do not replace validation with object identity, timestamps or a last-message-only check: those can miss historical/in-place edits and revive the stale-turn bug.
 
-Before production integration: benchmark the exact runtime call path (not just the helper), verify gains when host objects are cloned or mutated, choose thresholds without slowing small/complex workloads, measure retained/peak memory over long sessions and compaction, and run all cancellation/continuity regressions. This research intentionally does not change, publish or reinstall the user's plugin.
+The integration should benchmark bundled fingerprint functions, verify gains when host objects are cloned or mutated, bound snapshot complexity, measure retained memory over long sessions and compaction, and run all cancellation/continuity regressions.
+
+## Production integration
+
+`extension/history-fingerprint.ts` is injected through a guarded build seam into the pinned runtime's message-fingerprint function. Field selection, canonical JSON, aggregate hashing, saved digest format and all verification points remain unchanged. Each lookup compares an independent snapshot against live values; only messages with a direct string of at least 2,048 characters and at most 128 value nodes qualify. Accessors, proxies, exotic prototypes, cycles/aliases and sparse/custom arrays fall back. A stale entry is removed before recomputation. WeakMap entries retain no mutable host containers or compute callbacks. No user setting is needed because correctness checks are mandatory and unchanged.
+
+`bun --expose-gc scripts/benchmark-runtime-history.ts` extracts the actual bundled fingerprint functions, compares the original hash path with the integrated memo, and performs two full checks (prefix plus pending-context capture). It uses 15 warmups, 15 alternating samples and five repetitions per warm sample. Cold samples clone the transcript outside timing; the first check populates entries and the second can reuse them. These are **local comparison timings, not end-to-end OMP/ACP request timings**. Sizes below are serialized JSON bytes, not tokens or model context capacity.
+
+On this Mac, Bun 1.4.2, sequential benchmark run:
+
+| Synthetic transcript | Original two checks | Integrated warm | Integrated cold |
+| --- | ---: | ---: | ---: |
+| 99,785 bytes / 100 messages | 0.596 ms | 0.660 ms | 0.590 ms |
+| 1,395,785 bytes / 100 messages | 3.597 ms | 0.077 ms | 1.996 ms |
+| 11,086,985 bytes / 100 messages | 24.515 ms | 0.081 ms | 12.654 ms |
+| 319,185 bytes / 100 complex messages | 6.915 ms | 6.938 ms | 6.939 ms |
+
+Small messages added approximately 0.064 ms in this run; complex messages gained little. Long unchanged text benefited most. A memory probe using 2,000 messages and 16 million generated characters measured about 674 KB of additional live snapshot heap in Bun. After dropping the transcript to simulate compaction, the old message weak reference cleared and heap settled about 12 KB above the pre-fixture reading. GC timing and allocator readings vary; these are retained-heap observations, not a hard bound on process RSS or peak memory. No disk cache or canonical-JSON copy is retained.
+
+Validation includes built-runtime digest equivalence across roles, nested edits, reorderings, field deletion, model changes, cloned objects and unsupported shapes; real runtime cancellation with large shared message objects; the full offline checks; and a clean packed installation loaded by actual OMP without starting ACP. No live inference or user installation change is part of this integration.

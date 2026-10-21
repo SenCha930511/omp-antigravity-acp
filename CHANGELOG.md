@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Reuse large-message history fingerprints only after validating independent value snapshots, preserving SHA-256 compatibility and post-await continuity checks. Small/complex/unsupported messages retain the original algorithm; weak keys release discarded history.
+- Add built-runtime digest compatibility, mutable-history cancellation regressions and offline timing/memory probes.
+
 ## 0.1.19 — 2026-10-21
 
 - Prevent new or edited user requests from being swallowed by a pending tool/permission continuation after interruption.
