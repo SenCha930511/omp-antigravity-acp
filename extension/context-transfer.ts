@@ -1,6 +1,6 @@
 // Adapter-owned context transfer. The pinned upstream dependency stays intact.
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai/utils/transcript";
-import { estimateTransferTokens, resolveContextOptions, type ContextOptions } from "./context-settings.ts";
+import { estimateTransferTokens, resolveContextOptions, type ContextOptions, type ResolvedContextOptions } from "./context-settings.ts";
 export interface TransferBlock {
   type: string;
   text?: string;
@@ -42,8 +42,14 @@ export function historyBudget(_contextWindow = 32_768, env = process.env, config
 
 export function buildPromptParts(context: TransferContext, fresh: boolean, unseenStart?: number,
   limits: { contextWindow?: number; maxTokens?: number; policy?: ContextOptions } = {}) {
-  const options = resolveContextOptions({ id: "transfer", contextWindow: limits.contextWindow ?? 32_768, maxTokens: limits.maxTokens ?? 8192 },
-    { defaults: limits.policy ?? {}, models: {} });
+  // The runtime hot path always passes a fully resolved ompContextPolicy
+  // (see scripts/build.mjs); re-resolution is only needed for partial input.
+  const policy = limits.policy;
+  const options: ResolvedContextOptions = policy &&
+      typeof policy.inputTokenBudget === "number" && typeof policy.maxTransferBytes === "number" && typeof policy.maxImageBytes === "number"
+    ? policy
+    : resolveContextOptions({ id: "transfer", contextWindow: limits.contextWindow ?? 32_768, maxTokens: limits.maxTokens ?? 8192 },
+      { defaults: limits.policy ?? {}, models: {} });
   const messages = context.messages;
   let latest = messages.length - 1;
   while (latest >= 0 && messages[latest]!.role !== "user") latest--;
@@ -94,7 +100,8 @@ export function buildPromptParts(context: TransferContext, fresh: boolean, unsee
     tailBlocks.push(continuation);
   } else {
     const content = messages[latest]!.content;
-    const latestBlocks = typeof content === "string" ? [{ type: "text", text: content }] : content.map(block => ({ ...block }));
+    // Blocks are consumed read-only; shallow copies only churn the hot path.
+    const latestBlocks: TransferBlock[] = typeof content === "string" ? [{ type: "text", text: content }] : content;
     prompt.push(...latestBlocks);
     tailBlocks.push(...latestBlocks);
   }
@@ -104,7 +111,7 @@ export function buildPromptParts(context: TransferContext, fresh: boolean, unsee
   let imageCount = 0;
   let imageWireChars = 0;
   const tailTextOnly: TransferBlock[] = [];
-  for (const block of [...images, ...tailBlocks]) {
+  for (const group of [images, tailBlocks]) for (const block of group) {
     if (block.type !== "image") {
       tailTextOnly.push(block);
       continue;

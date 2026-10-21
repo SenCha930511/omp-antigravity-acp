@@ -35,6 +35,8 @@ export function saveDebugToolUpdates(file: string, enabled: boolean) {
   saveToolPolicy(file, { ...loadToolPolicy(file), debugToolUpdates: enabled });
 }
 
-function saveToolPolicy(file: string, policy: ToolPolicy) {
+export function saveToolPolicy(file: string, policy: ToolPolicy) {
+  parseNativeToolMode(policy.nativeTools);
+  if (typeof policy.debugToolUpdates !== "boolean") throw new Error("debugToolUpdates must be boolean");
   writeJsonAtomic(file, policy);
 }

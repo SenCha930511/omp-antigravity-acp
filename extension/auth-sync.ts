@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import fs from "node:fs";
 import path from "node:path";
 import { clearAntigravityCredentials, hasAntigravityAuth, resolveAntigravityAcpDirectory } from "./runtime.mjs";
@@ -60,6 +61,18 @@ export function antigravityAccountEmail(): string | undefined {
 // Timing knobs for following OMP-side logouts; mutable so offline tests can
 // run the delayed detection without real waits.
 export const logoutFollow = { delayMs: 500, retryMs: 15_000 };
+
+// Shared wording for both logout confirmations (direct command and the
+// follow-up that finishes a logout OMP started).
+export function formatLogoutSummary(options: { keychainRemoved: boolean | undefined; ompMarker?: "removed" | "absent" | "unavailable"; followed?: boolean }): string {
+  const cleared = ["Google credentials", "saved ACP sessions"];
+  if (options.keychainRemoved === true) cleared.push("the macOS keychain entry");
+  if (options.ompMarker === "removed") cleared.push("the OMP marker record");
+  const list = cleared.slice(0, -1).join(", ") + " and " + cleared[cleared.length - 1];
+  return `${options.followed ? "Antigravity ACP: finished the logout OMP started — " : "Antigravity ACP: logged out — "}${list} cleared.` +
+    (options.ompMarker === "unavailable" ? " The OMP marker record could not be removed; run /logout to drop it." : "") +
+    (options.keychainRemoved === false ? " The macOS keychain entry was not present or not removable." : "");
+}
 
 export function authReady(): boolean {
   return hasAntigravityAuth() || keychain.present() === true;
@@ -139,8 +152,8 @@ export class OmpAuthCoordinator {
   private selfLogout = false;
   // Whether registerProvider keeps the non-secret config apiKey fallback.
   apiKeyFallback = true;
-  private followTimer: ReturnType<typeof setTimeout> | undefined;
-  private followRetry: ReturnType<typeof setTimeout> | undefined;
+  private followTimer: NodeJS.Timeout | undefined;
+  private followRetry: NodeJS.Timeout | undefined;
 
   constructor(private readonly deps: AuthCoordinatorDeps) {}
 
@@ -156,13 +169,13 @@ export class OmpAuthCoordinator {
   async removeKeychainCredentialDurably(): Promise<boolean | undefined> {
     const pending = [...this.deps.connections].map(connection => connection.process.exited.catch(() => undefined));
     if (pending.length > 0) {
-      await Promise.race([Promise.allSettled(pending), new Promise(resolve => setTimeout(resolve, 10_000))]);
+      await Promise.race([Promise.allSettled(pending), delay(10_000)]);
     }
     for (let attempt = 0; attempt < 3; attempt++) {
       if (keychain.present() === false) return true;
       const removed = keychain.remove();
       if (removed !== true) return removed;
-      await new Promise(resolve => setTimeout(resolve, 400));
+      await delay(400);
     }
     return keychain.present() === false;
   }
@@ -213,11 +226,8 @@ export class OmpAuthCoordinator {
     await this.deps.closeAllRuntimes();
     const keychainRemoved = await this.removeKeychainCredentialDurably();
     // Keep the confirmation terse; /antigravity-acp account shows the details.
-    const cleared = ["Google credentials", "saved ACP sessions"];
-    if (keychainRemoved === true) cleared.push("the macOS keychain entry");
-    const list = cleared.slice(0, -1).join(", ") + " and " + cleared[cleared.length - 1];
     try {
-      ctx?.ui?.notify?.(`Antigravity ACP: finished the logout OMP started — ${list} cleared.${keychainRemoved === false ? " The macOS keychain entry was not present or not removable." : ""}`, "info");
+      ctx?.ui?.notify?.(formatLogoutSummary({ keychainRemoved, followed: true }), "info");
     } catch { /* the host UI may already be gone */ }
   }
 

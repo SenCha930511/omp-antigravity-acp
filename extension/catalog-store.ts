@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { writeJsonAtomic } from "./fs-atomic.ts";
-import { resolveContextOptions, type ContextOptions, type ContextSettings } from "./context-settings.ts";
+import { resolveContextOptions, type ContextOptions, type ContextSettings, type ResolvedContextOptions } from "./context-settings.ts";
 import { EFFORTS, projectCatalog, readModels, type AdvertisedModel, type PublicCatalogModel } from "./model-catalog.ts";
 import { officialApiCost } from "./pricing.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
@@ -8,12 +8,13 @@ import { TierConnection } from "./runtime.mjs";
 import type { SessionCleanup } from "./session-cleanup.ts";
 
 export interface ConfiguredCatalogModel extends PublicCatalogModel {
-  ompContextPolicy: ReturnType<typeof resolveContextOptions>;
+  ompContextPolicy: ResolvedContextOptions;
 }
 
 export class CatalogStore {
   readonly upstreamModels = new Map<string, ConfiguredCatalogModel>();
   currentModels: ConfiguredCatalogModel[] = [];
+  private dynamicCache?: { mtimeMs: number; size: number; settings: ContextSettings; models: ConfiguredCatalogModel[] };
 
   constructor(
     private readonly cachePath: string,
@@ -54,6 +55,27 @@ export class CatalogStore {
     const base = cached.length ? projectCatalog(cached) : this.fallbackModels();
     this.currentModels = this.projectWithSettings(base, settings);
     return this.currentModels;
+  }
+
+  // OMP's host may call fetchDynamicModels on every startup pass; stat-based
+  // reuse avoids re-reading and re-projecting an unchanged cache file.
+  getDynamicModels(settings: ContextSettings): ConfiguredCatalogModel[] {
+    try {
+      const stat = fs.statSync(this.cachePath);
+      if (this.dynamicCache && this.currentModels.length > 0 &&
+          this.dynamicCache.mtimeMs === stat.mtimeMs && this.dynamicCache.size === stat.size &&
+          this.dynamicCache.settings === settings) {
+        return this.dynamicCache.models;
+      }
+    } catch { /* Missing or unreadable cache: fall through to a fresh read. */ }
+    const cached = this.readCachedCatalog();
+    const base = cached.length ? projectCatalog(cached) : this.fallbackModels();
+    const models = this.projectWithSettings(base, settings);
+    try {
+      const stat = fs.statSync(this.cachePath);
+      this.dynamicCache = { mtimeMs: stat.mtimeMs, size: stat.size, settings, models };
+    } catch { /* No cache file yet; nothing to key reuse on. */ }
+    return models;
   }
 
   reconfigure(settings: ContextSettings): ConfiguredCatalogModel[] {

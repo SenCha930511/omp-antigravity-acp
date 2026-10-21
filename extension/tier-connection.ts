@@ -17,7 +17,7 @@ export class TierConnection extends AntigravityAcpConnection {
   readonly contextUsage = new Map<string, { used: number; size: number }>();
   readonly usageStatus = new Map<string, { source: string; cache: string; error?: string }>();
   private readonly usageBaselines = new Map<string, SessionUsage>();
-  private usageCapture: { sessionId: string; text: string } | undefined;
+  private readonly usageCaptures = new Map<string, { text: string }>();
   private readonly usageCommands = new Set<string>();
   private cleanup?: SessionCleanup;
   private cleanupLeases = new Map<string, string>();
@@ -45,9 +45,10 @@ export class TierConnection extends AntigravityAcpConnection {
       if (update.sessionUpdate === "usage_update" && typeof update.used === "number" && Number.isSafeInteger(update.used) && typeof update.size === "number" && Number.isSafeInteger(update.size)) {
         this.contextUsage.set(notification.sessionId, { used: update.used, size: update.size });
       }
-      if (this.usageCapture && this.usageCapture.sessionId === notification.sessionId) {
+      const capture = this.usageCaptures.get(notification.sessionId);
+      if (capture) {
         if (update.sessionUpdate === "agent_message_chunk" && update.content?.type === "text" && typeof update.content.text === "string") {
-          this.usageCapture.text += update.content.text;
+          capture.text += update.content.text;
         }
         return;
       }
@@ -121,20 +122,21 @@ export class TierConnection extends AntigravityAcpConnection {
     this.usageStatus?.clear();
     this.usageBaselines?.clear();
     this.usageCommands?.clear();
+    this.usageCaptures?.clear();
   }
 
   private async readUsage(sessionId: string, signal?: AbortSignal) {
     const started = performance.now();
     this.usageQueryCount++;
-    const capture = { sessionId, text: "" };
-    this.usageCapture = capture;
+    const capture = { text: "" };
+    this.usageCaptures.set(sessionId, capture);
     try {
       const deadline = AbortSignal.timeout(5_000);
       await super.prompt({ sessionId, prompt: [{ type: "text", text: "/usage" }] },
         signal ? AbortSignal.any([signal, deadline]) : deadline);
       return parseSessionUsage(capture.text);
     } finally {
-      if (this.usageCapture === capture) this.usageCapture = undefined;
+      if (this.usageCaptures.get(sessionId) === capture) this.usageCaptures.delete(sessionId);
       this.usageQueryMs += performance.now() - started;
     }
   }

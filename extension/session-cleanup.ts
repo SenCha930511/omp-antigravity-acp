@@ -40,9 +40,10 @@ function group(key: string) { return createHash("sha256").update(key).digest("he
 export class SessionCleanup {
   readonly policyPath: string;
   private readonly registryPath: string;
-  private timer?: ReturnType<typeof setInterval>;
+  private timer?: NodeJS.Timeout;
   private readonly lastTouched = new Map<string, number>();
   private readonly pendingTouches = new Map<string, number>();
+  private cachedPolicy?: { mtimeMs: number; size: number; policy: CleanupPolicy };
   constructor(stateDir: string, readonly acpDir = resolveAntigravityAcpDirectory(),
     private readonly now = Date.now, private readonly isLive = live) {
     this.policyPath = path.join(stateDir, "cleanup.json");
@@ -50,10 +51,27 @@ export class SessionCleanup {
     const root = createHash("sha256").update(path.resolve(acpDir)).digest("hex").slice(0, 16);
     this.registryPath = path.join(stateDir, `cleanup-sessions-${root}.json`);
   }
-  configure(mode: CleanupMode, idleDays = loadCleanupPolicy(this.policyPath).idleDays) {
-    saveCleanupPolicy(this.policyPath, { mode, idleDays });
+  // Stat-based cache: release/collect/status otherwise re-read this file on
+  // every call. mtime plus size covers test rewrites within the same ms.
+  private getPolicy(): CleanupPolicy {
+    try {
+      const stat = fs.statSync(this.policyPath);
+      if (this.cachedPolicy && this.cachedPolicy.mtimeMs === stat.mtimeMs && this.cachedPolicy.size === stat.size) {
+        return this.cachedPolicy.policy;
+      }
+      const policy = validate(JSON.parse(fs.readFileSync(this.policyPath, "utf8")));
+      this.cachedPolicy = { mtimeMs: stat.mtimeMs, size: stat.size, policy };
+      return policy;
+    } catch (error: unknown) {
+      if (isMissingFileError(error)) return { ...DEFAULT };
+      throw error;
+    }
   }
-  status() { return { ...loadCleanupPolicy(this.policyPath), file: this.policyPath, scope: "adapter-owned local ACP data" }; }
+  configure(mode: CleanupMode, idleDays = this.getPolicy().idleDays) {
+    saveCleanupPolicy(this.policyPath, { mode, idleDays });
+    this.cachedPolicy = undefined;
+  }
+  status() { return { ...this.getPolicy(), file: this.policyPath, scope: "adapter-owned local ACP data" }; }
   start() {
     if (this.timer) return;
     this.collect();
@@ -134,10 +152,13 @@ export class SessionCleanup {
   }
   collect(): number {
     try {
-      const policy = loadCleanupPolicy(this.policyPath);
+      const policy = this.getPolicy();
       if (policy.mode === "off") return 0;
       return this.transaction(registry => {
         let removed = 0;
+        // Verify the cleanup root once per collect, lazily on the first
+        // eligible session instead of once per removed session.
+        let dirs: { conversations: string; brain: string } | undefined;
         registry.sessions = registry.sessions.filter(r => {
           r.leases = r.leases.filter(l => this.isLive(l.pid) || this.isLive(l.serverPid));
           if (!r.owned && r.leases.length === 0) return false;
@@ -145,7 +166,8 @@ export class SessionCleanup {
             (policy.mode === "timeout" && this.now() - r.lastUsed >= policy.idleDays * 86_400_000));
           if (!eligible) return true;
           try {
-            this.removeFiles(r.id);
+            dirs ??= this.verifyCleanupRoot();
+            this.removeFiles(r.id, dirs);
             this.lastTouched.delete(r.id);
             this.pendingTouches.delete(r.id);
             removed++;
@@ -157,24 +179,27 @@ export class SessionCleanup {
       });
     } catch { return 0; }
   }
-  private removeFiles(id: string) {
+  private verifyCleanupRoot(): { conversations: string; brain: string } {
     const root = path.resolve(this.acpDir);
     if (fs.realpathSync(root) !== root) throw new Error("Symlinked ACP root; refusing cleanup");
     const conversations = path.join(root, "conversations");
     const brain = path.join(root, "brain");
-    const targets = [path.join(conversations, `${id}.db`), path.join(conversations, `${id}.db-wal`),
-      path.join(conversations, `${id}.db-shm`), path.join(conversations, `${id}.db-journal`),
-      path.join(conversations, `${id}.meta`), path.join(brain, id)];
+    for (const parent of [conversations, brain]) {
+      try { if (fs.realpathSync(parent) !== parent) throw new Error("Symlinked cleanup directory"); }
+      catch (error: unknown) { if (!isMissingFileError(error)) throw error; }
+    }
+    return { conversations, brain };
+  }
+  private removeFiles(id: string, dirs: { conversations: string; brain: string }) {
+    const targets = [path.join(dirs.conversations, `${id}.db`), path.join(dirs.conversations, `${id}.db-wal`),
+      path.join(dirs.conversations, `${id}.db-shm`), path.join(dirs.conversations, `${id}.db-journal`),
+      path.join(dirs.conversations, `${id}.meta`), path.join(dirs.brain, id)];
     const inspect = (file: string) => {
       let stat: fs.Stats;
       try { stat = fs.lstatSync(file); } catch (error: unknown) { if (isMissingFileError(error)) return; throw error; }
       if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) throw new Error("Unsafe cleanup target");
       if (stat.isDirectory()) for (const child of fs.readdirSync(file)) inspect(path.join(file, child));
     };
-    for (const parent of [conversations, brain]) {
-      try { if (fs.realpathSync(parent) !== parent) throw new Error("Symlinked cleanup directory"); }
-      catch (error: unknown) { if (!isMissingFileError(error)) throw error; }
-    }
     for (const target of targets) inspect(target);
     for (const target of targets) fs.rmSync(target, { recursive: true, force: true });
   }

@@ -1,12 +1,13 @@
 // OMP 18.x adapter for pi-antigravity-acp-provider 0.1.15 (Pi 1.1 API).
 // Keep upstream code intact; translate only the provider registration contract.
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { applyApiCostEstimate } from "./pricing.ts";
 import { SessionRuntimePool } from "./runtime-pool.ts";
 import { stableTools } from "./tool-order.ts";
 import { loadContextSettings } from "./context-settings.ts";
-import { projectCatalog, selectRuntimeModel, type PublicCatalogModel } from "./model-catalog.ts";
+import { selectRuntimeModel, type PublicCatalogModel } from "./model-catalog.ts";
 import { TOOL_ROUTING } from "./tool-routing.ts";
 import { loadToolPolicy } from "./tool-policy.ts";
 import {
@@ -22,6 +23,7 @@ import { createAntigravityCommandHandler, type RuntimeBundleView, type ToolAudit
 import {
   AcpSessionStore,
   AntigravityRuntime,
+  clearAntigravityCredentials,
   FALLBACK_MODELS,
   PERMISSION_RESULT_KIND,
   PERMISSION_TOOL_NAME,
@@ -58,8 +60,20 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
   let contextSettings = loadContextSettings(contextPath);
   let toolPolicy = loadToolPolicy(toolPolicyPath);
   let permissionMode = loadConfig(configPath).permissions;
-  const sessionStore = new AcpSessionStore(path.join(stateDir, "sessions.json"));
+  const sessionStorePath = path.join(stateDir, "sessions.json");
+  const sessionStore = new AcpSessionStore(sessionStorePath);
   const cleanup = new SessionCleanup(stateDir);
+  // AcpSessionStore.read is private upstream; count saved records from the
+  // file so /antigravity-acp account needs no live runtime.
+  const savedSessionCount = (): number => {
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(sessionStorePath, "utf8"));
+      return Array.isArray(parsed)
+        ? parsed.filter(record => Boolean(record) && typeof record === "object" &&
+            typeof (record as { piSessionId?: unknown }).piSessionId === "string").length
+        : 0;
+    } catch { return 0; }
+  };
 
   // Loading this global extension must not start ACP or query Google.
   let readiness: Promise<void> | undefined;
@@ -85,7 +99,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
     audit: ToolAuditSummary;
   } | undefined;
 
-  const runtimes = new SessionRuntimePool(() => {
+  const runtimes = new SessionRuntimePool<RuntimeBundleView>(() => {
     const ownedConnections = new Set<TierConnection>();
     const runtime = new AntigravityRuntime((options: ConstructorParameters<typeof TierConnection>[0]) => {
       const connection = new TierConnection({
@@ -133,8 +147,11 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
     connections,
     isPoolBusy: () => runtimes.values().some(bundle => bundle.isBusy()),
     logoutAllRuntimes: async () => {
-      runtimes.get();
       await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
+      // Finish the Antigravity-side cleanup even when the pool is empty,
+      // instead of instantiating a runtime just to log it out.
+      sessionStore.clear();
+      clearAntigravityCredentials();
     },
     closeAllRuntimes: () => runtimes.closeAll(),
     onSyncProvider: syncProviderRegistration,
@@ -185,8 +202,11 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
       setToolPolicy: next => { toolPolicy = next; },
       setPermissionModeState: mode => { permissionMode = mode; },
       getLastToolAudit: () => lastToolAudit,
-      getRuntimeForSession: sessionId => runtimes.get(sessionId) as unknown as RuntimeBundleView,
-      getAllRuntimes: () => runtimes.values() as unknown as RuntimeBundleView[],
+      getRuntimeForSession: sessionId => runtimes.get(sessionId),
+      peekRuntimeForSession: sessionId => runtimes.peek(sessionId),
+      getSavedSessionCount: savedSessionCount,
+      getPermissionMode: () => permissionMode,
+      getAllRuntimes: () => runtimes.values(),
       closeAllRuntimes: () => runtimes.closeAll(),
       onModelsUpdated: models => {
         initialModels = models;
@@ -213,9 +233,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
         async fetchDynamicModels() {
           // OMP may call this during startup, even for another provider.
           // Network discovery is reserved for explicit refresh or first ACP use.
-          const cached = catalogStore.readCachedCatalog();
-          const base = cached.length ? projectCatalog(cached) : [...(FALLBACK_MODELS as PublicCatalogModel[])];
-          return catalogStore.projectWithSettings(base, contextSettings);
+          return catalogStore.getDynamicModels(contextSettings);
         },
         streamSimple(
           model: { id: string },
@@ -225,10 +243,14 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
           const inputTools = context.tools ?? [];
           let tools: Array<{ name: string }>;
           let availableNames: string;
-          if (cachedToolProjection && cachedToolProjection.ref === inputTools) {
-            tools = cachedToolProjection.tools;
-            availableNames = cachedToolProjection.availableNames;
-            lastToolAudit = cachedToolProjection.audit;
+          const cached = cachedToolProjection;
+          // Hosts may rebuild the tools array each turn; equal contents hit.
+          if (cached && (cached.ref === inputTools ||
+              (cached.ref !== undefined && cached.ref.length === inputTools.length &&
+                inputTools.every((tool, index) => tool === cached.ref![index])))) {
+            tools = cached.tools;
+            availableNames = cached.availableNames;
+            lastToolAudit = cached.audit;
           } else {
             tools = stableTools(inputTools);
             const bridged = tools.filter(tool => tool.name !== PERMISSION_TOOL_NAME);

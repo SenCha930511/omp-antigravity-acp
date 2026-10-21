@@ -1,4 +1,4 @@
-import { parseThoughtRoute, validId, type AdvertisedModel } from "./model-catalog.ts";
+import { parseThoughtRoute, splitLegacyEffort, validId, type AdvertisedModel } from "./model-catalog.ts";
 
 export interface ConfigOptionChoice {
   value?: unknown;
@@ -46,7 +46,7 @@ export function resolveSelection(state: SelectorState | undefined, requested: st
     if (!values.includes(local.modelId)) throw new Error(`ACP no longer advertises model ${local.modelId}`);
     return local;
   }
-  const legacy = requested.match(/^(.+)-(off|minimal|low|medium|high|xhigh|max)$/);
-  if (legacy && values.includes(legacy[1]!)) return { modelId: legacy[1]!, effort: legacy[2]! };
+  const legacy = splitLegacyEffort(requested);
+  if (legacy && values.includes(legacy.base)) return { modelId: legacy.base, effort: legacy.effort };
   return { modelId: requested };
 }

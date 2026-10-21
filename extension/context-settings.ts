@@ -59,7 +59,17 @@ export function updateContextSettings(settings: ContextSettings, target: string,
   validate(options, target === "default");
   return next;
 }
-export function resolveContextOptions(model: { id: string; contextWindow: number; maxTokens: number }, settings: ContextSettings) {
+
+export interface ResolvedContextOptions {
+  contextWindow: number;
+  maxTokens: number;
+  reserveTokens: number;
+  inputTokenBudget: number;
+  maxTransferBytes: number;
+  maxImageBytes: number;
+}
+
+export function resolveContextOptions(model: { id: string; contextWindow: number; maxTokens: number }, settings: ContextSettings): ResolvedContextOptions {
   const options = { ...settings.defaults, ...settings.models[model.id] };
   const contextWindow = options.contextWindow ?? model.contextWindow;
   const maxTokens = options.maxTokens ?? model.maxTokens;

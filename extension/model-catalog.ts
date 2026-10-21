@@ -22,6 +22,12 @@ export interface PublicCatalogModel {
   thinking?: { mode: "effort"; efforts: string[]; defaultLevel?: string };
 }
 const ROUTE_PREFIX = "__omp_acp_thought__:";
+// Single source for the legacy "<base>-<effort>" advertised ID suffix.
+const LEGACY_EFFORT_SUFFIX = new RegExp(`^(.+)-(${EFFORTS.join("|")})$`);
+export function splitLegacyEffort(modelId: string): { base: string; effort: string } | undefined {
+  const match = modelId.match(LEGACY_EFFORT_SUFFIX);
+  return match ? { base: match[1]!, effort: match[2]! } : undefined;
+}
 export function validId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 256 &&
     value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value);
@@ -74,13 +80,12 @@ export function projectCatalog(value: unknown): PublicCatalogModel[] {
   const groups = new Map<string, { name: string; map: Record<string, string>; count: number }>();
   for (const record of records) {
     if (record.selector) continue;
-    const match = record.modelId.match(/^(.+)-(off|minimal|low|medium|high|xhigh|max)$/);
-    if (!match) continue;
-    const [, base, effort] = match;
-    const group = groups.get(base!) ?? { name: record.name.replace(/\s*\((?:off|minimal|low|medium|high|xhigh|max)\)\s*$/i, ""), map: {}, count: 0 };
-    group.map[effort!] = record.modelId;
+    const legacy = splitLegacyEffort(record.modelId);
+    if (!legacy) continue;
+    const group = groups.get(legacy.base) ?? { name: record.name.replace(/\s*\((?:off|minimal|low|medium|high|xhigh|max)\)\s*$/i, ""), map: {}, count: 0 };
+    group.map[legacy.effort] = record.modelId;
     group.count = Object.keys(group.map).length;
-    groups.set(base!, group);
+    groups.set(legacy.base, group);
   }
   const emitted = new Set<string>();
   const models: PublicCatalogModel[] = [];
@@ -94,9 +99,9 @@ export function projectCatalog(value: unknown): PublicCatalogModel[] {
       emitted.add(record.modelId);
       continue;
     }
-    const match = record.modelId.match(/^(.+)-(off|minimal|low|medium|high|xhigh|max)$/);
-    const group = match ? groups.get(match[1]!) : groups.get(record.modelId);
-    const id = group && group.count > 1 && match ? match[1]! : record.modelId;
+    const legacy = splitLegacyEffort(record.modelId);
+    const group = legacy ? groups.get(legacy.base) : groups.get(record.modelId);
+    const id = group && group.count > 1 && legacy ? legacy.base : record.modelId;
     if (emitted.has(id)) continue;
     models.push(publicModel(id, group?.name || record.name || id, group?.map));
     emitted.add(id);

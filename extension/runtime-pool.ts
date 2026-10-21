@@ -3,7 +3,7 @@
 export class SessionRuntimePool<T> {
   private readonly entries = new Map<string | undefined, T>();
   private readonly leases = new Map<T, number>();
-  private readonly timers = new Map<T, ReturnType<typeof setTimeout>>();
+  private readonly timers = new Map<T, NodeJS.Timeout>();
 
   constructor(
     private readonly create: () => T,
@@ -21,6 +21,11 @@ export class SessionRuntimePool<T> {
     return entry;
   }
 
+  // Inspection without instantiating: command handlers that only report
+  // state must not spawn an idle ACP runtime for a fresh session.
+  peek(sessionId?: string): T | undefined {
+    return this.entries.get(sessionId);
+  }
   acquire(sessionId?: string) {
     const value = this.get(sessionId);
     this.leases.set(value, (this.leases.get(value) ?? 0) + 1);
@@ -36,8 +41,7 @@ export class SessionRuntimePool<T> {
   }
 
   private clearTimer(entry: T) {
-    const timer = this.timers.get(entry);
-    if (timer) clearTimeout(timer);
+    clearTimeout(this.timers.get(entry));
     this.timers.delete(entry);
   }
 
