@@ -1,5 +1,13 @@
 # Changelog
 
+
+## 0.1.10 — 2026-10-21
+
+- Add `/antigravity-acp account` to inspect authentication state on both the OMP and Antigravity sides, including the macOS keychain entry and saved ACP session count.
+- Add `/antigravity-acp login` to run the Antigravity Google authorization in a command dialog, and `/antigravity-acp logout` to clear Antigravity credentials, saved ACP sessions, the macOS keychain entry and OMP's marker record in one step; logout refuses to run while requests are active.
+- Keep OMP `/login`/`/logout` semantics explicit: OMP removes only its non-secret marker record, while the adapter command performs the complete local logout.
+- Add an offline auth-command regression suite with isolated `GEMINI_HOME`, stubbed keychain and stubbed OAuth flow.
+
 ## 0.1.9 — 2026-10-20
 
 - Add persistent `off`, `conservative` (default) and `timeout` ACP session-cleanup modes with a configurable idle deadline.
