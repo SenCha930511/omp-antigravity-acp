@@ -102,7 +102,7 @@ function structuredMemo() {
   checkTools(); field.description = "edited again"; checkTools(); field.description = original; checkTools();
 }
 
-async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup: boolean, structured = false) {
+async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup: boolean, structured = false, productionCache = true) {
   __setPrototypeMemos(structured ? { system: structuredMemo(), tools: structuredMemo() } : undefined);
   const rows: any[] = [];
   for (let sample = 0; sample < 9; sample++) {
@@ -110,9 +110,10 @@ async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup:
     const store = disk ? new AcpSessionStore(file) : undefined;
     const memory = new Map();
     const costs: number[] = [];
-    const savedStore = { get: (id: string) => store?.get(id) ?? memory.get(id),
-      remove: (id: string) => { store?.remove(id); memory.delete(id); },
-      save(record: any) { const t = performance.now(); if (store) store.save(record); else memory.set(record.piSessionId, record);
+    const savedStore = { get: (id: string) => store ? store.get(id) : memory.get(id),
+      remove: async (id: string) => { await store?.remove(id); memory.delete(id); },
+      flush: () => store?.flush(),
+      async save(record: any) { const t = performance.now(); if (store) await store.save(record); else memory.set(record.piSessionId, record);
         costs.push(performance.now() - t); } };
     let sends = 0, prompts = 0, ackAt = 0, nextAt = 0, abortAt = 0, startAt = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -138,6 +139,10 @@ async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup:
       async close() { c.process.alive = false; exit.resolve({ code: 0 }); },
     };
     const runtime = new AntigravityRuntime(() => c, "yolo", savedStore);
+    if (!productionCache) {
+      const bypass = Object.assign((_value: any, compute: () => string) => compute(), { clear() {} });
+      runtime.ompSystemMemo = bypass; runtime.ompToolsMemo = bypass;
+    }
     const selectedTools = tools.slice(0, toolCount), controller = new AbortController();
     const sessionId = randomUUID();
     async function consume(messages: any[], signal?: AbortSignal) {
@@ -167,7 +172,7 @@ async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup:
     } finally { if (timer) clearTimeout(timer); await runtime.close(); }
   }
   const measured = rows.slice(3);
-  return { toolCount, delayMs, disk, dedup, structured, samples: measured.length,
+  return { toolCount, delayMs, disk, dedup, structured, productionCache, samples: measured.length,
     medians: Object.fromEntries(["sends", "abortToDispatch", "promptToDispatch", "serverWait", "afterAck", "storeMs"].map(key =>
       [key, median(measured.map(row => row[key]))])),
     functions: Object.fromEntries(functions.map(name => [name, {
@@ -177,10 +182,14 @@ async function runCase(toolCount: number, delayMs: number, disk: boolean, dedup:
 }
 
 try {
-  for (const [count, delay, disk, dedup, structured] of [[0, 0, false, false, false], [64, 0, false, false, false],
+  const cases = process.argv.includes("--production")
+    ? [[64, 0, false, false, false, false], [64, 0, false, false, false, true],
+       [64, 0, true, false, false, false], [64, 0, true, false, false, true]]
+    : [[0, 0, false, false, false], [64, 0, false, false, false],
     [64, 0, false, false, true], [64, 50, false, false, false], [64, 50, false, true, false],
-    [64, 50, false, false, true], [64, 0, true, false, false], [64, 0, true, false, true]] as const) {
-    console.log(JSON.stringify(await runCase(count, delay, disk, dedup, structured)));
+    [64, 50, false, false, true], [64, 0, true, false, false], [64, 0, true, false, true]];
+  for (const [count, delay, disk, dedup, structured, productionCache] of cases as Array<[number, number, boolean, boolean, boolean, boolean?]>) {
+    console.log(JSON.stringify(await runCase(count, delay, disk, dedup, structured, productionCache)));
   }
   // Isolated contention: a separate process releases only this probe's lock.
   const file = path.join(state, "contended.json"), lock = file + ".lock";
@@ -192,12 +201,12 @@ try {
   const begin = performance.now();
   const timer = setTimeout(() => { tickAt = performance.now(); }, 0);
   try {
-    new AcpSessionStore(file).save({ piSessionId: "synthetic", acpSessionId: randomUUID(), acpModelId: model.id,
+    await new AcpSessionStore(file).save({ piSessionId: "synthetic", acpSessionId: randomUUID(), acpModelId: model.id,
       cwd: state, messageCount: 0, historyFingerprint: "synthetic", lastActive: Date.now() });
     const blockedMs = performance.now() - begin;
     await exited;
     await delay(5);
     console.log(JSON.stringify({ isolatedContention: true, requestedLockHoldMs: 150,
-      synchronousSaveMs: +blockedMs.toFixed(3), eventLoopTickDelayMs: +(tickAt - begin).toFixed(3) }));
+      asyncSaveCompletionMs: +blockedMs.toFixed(3), eventLoopTickDelayMs: +(tickAt - begin).toFixed(3) }));
   } finally { clearTimeout(timer); if (syncFs.existsSync(lock)) await fs.rm(lock, { recursive: true, force: true }); }
 } finally { await fs.rm(state, { recursive: true, force: true }); }

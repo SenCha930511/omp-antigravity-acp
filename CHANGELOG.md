@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Cache value-validated system/tool fingerprints across regenerated containers, with per-runtime memory limits and teardown clearing; preserve exact digests and schema-mutation detection.
+- Replace blocking session-registry writes with asynchronous locked merge/atomic-rename transactions. Await cancellation checkpoints, initialization and active writes at lifecycle boundaries; prevent mode-change/queued-request deadlocks.
+
 - Reuse large-message history fingerprints only after validating independent value snapshots, preserving SHA-256 compatibility and post-await continuity checks. Small/complex/unsupported messages retain the original algorithm; weak keys release discarded history.
 - Add built-runtime digest compatibility, mutable-history cancellation regressions and offline timing/memory probes.
 

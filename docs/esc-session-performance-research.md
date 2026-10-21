@@ -1,6 +1,6 @@
 # Esc-to-session-reuse performance research — 2026-10-21
 
-Research against `d279ca5`; production runtime and installed package are unchanged by this investigation. All local probes use synthetic messages and tools. The optional live probe uses Flash Low only and isolated adapter state.
+The initial research below was against `d279ca5`. The subsequent production implementation is described at the end; the installed npm package remains unchanged pending release/install. All local probes use synthetic messages and tools. Live probes use Flash Low only and isolated adapter state.
 
 ## What the code actually waits for
 
@@ -41,3 +41,37 @@ Local computation can be reduced by milliseconds in these fixtures. Waiting for 
 ## Live attempt and limitation
 
 `bun scripts/verify-graceful-cancellation-live.ts --live --text-only` was attempted with the current source adapter and Flash 3.8 Low. The first request produced no cancellable text chunk before its 90-second deadline; the assertion requiring a genuine output-triggered interruption failed, so the follow-up request was not submitted. This attempt supplies **no valid Esc acknowledgement or online speedup measurement**. The script closed its own connection and retired its own isolated session/state in `finally`. No user configuration or active user session was changed. A rerun is required before making real-server latency claims; no Argon calls were made.
+
+## Production implementation
+
+`extension/structured-fingerprint.ts` provides per-runtime system/tool caches. Each retains one primitive-token snapshot, bounded to 32,768 visited values, 131,072 primitive items and 2,097,152 UTF-16 code units across key/string values. Every lookup checks live descriptors/values, including non-enumerable schema properties; it does not trust container identity. Canonical system SHA-256 and tool-projection fingerprint strings remain unchanged. Native TypeBox 1.3 schemas and ordinary sync/async/generator execution functions are supported; functions become a marker rather than retained closures. Accessors, proxies, unsupported prototypes/symbol metadata, cycles/aliases, custom/sparse arrays and oversized payloads fall back. Teardown clears both caches even when flushing fails. Original large-text WeakMap fingerprints remain in use for other messages.
+
+`extension/session-store.ts` replaces the pinned store only in the adapter's generated bundle. All reads/writes and cross-process lock retries are asynchronous, while read/merge/rename transactions use the existing proper-lockfile path/30-second stale threshold and five-second contention deadline. Per-file queues serialize same-process instances; mutations capture their record before queueing; atomic temporary files use unique names and mode 0600. Existing file format, cancellation flags, 256-record cap and 30-day restore age remain compatible. Malformed JSON/non-array files and I/O failures stop instead of silently overwriting data.
+
+Every runtime read/save/remove/clear call is awaited at its owning boundary. Confirmed-cancellation checkpoints complete before releasing the turn's queue; follow-ups remain behind that queue. Initialization rechecks its lifecycle epoch after persistence so a late write cannot resurrect a closed runtime. Retiring bindings detach before awaiting removal. Continuations verify their captured active turn again after an asynchronous instruction-state write. Shutdown waits for active turn completion and flushes the store. It deliberately does not wait for callers queued behind a permission-mode change, avoiding a dependency cycle. This is completed asynchronous persistence, not deferred untracked writes. Atomic rename has the existing process-crash semantics; no new power-loss/fsync guarantee is claimed. Other config and cleanup registry I/O is unchanged.
+
+### Integrated offline measurements
+
+`bun scripts/probe-cancellation-cost.ts --production` compares the actual bundled runtime with the new system/tool caches bypassed versus enabled. Both variants use the new asynchronous store, so the disk row isolates cache gains rather than comparing old/new storage implementations. The earlier exploratory sampling limitations still apply; these are not randomized end-to-end server benchmarks.
+
+| 64-tool synthetic fixture | New caches bypassed | Enabled |
+| --- | ---: | ---: |
+| Memory store, zero-delay fake acknowledgement | 3.502 ms | 2.075 ms |
+| Actual temporary session registry, zero-delay fake acknowledgement | 3.788 ms | 2.287 ms |
+
+For isolated lock contention, asynchronous save completed after 244.576 ms while a zero-delay event-loop timer ran after **1.100 ms**. The original synchronous-store research measured 240.466 ms save / 243.795 ms timer delay. Lock wait is preserved, while the main event loop can process other work. These are separate synthetic runs, not a paired real-user diagnosis.
+
+`bun --expose-gc scripts/benchmark-structured-memory.ts` settles baseline serialization first, then populates both caches for 64 tools with 30 documented fields each. Additional retained heap measured 1,674,412 bytes (about 1.60 MiB); tool execution closures were collected while snapshots stayed cached, and closing the runtime released the snapshots. The observed close-time heap drop also includes discarded input strings and is not a pure cache-size measure. GC/allocator readings vary; configured bounds are structural limits, not exact process RSS guarantees.
+
+### Completed validation
+
+- `npm run check`: 77 unit tests plus built-runtime cleanup, interruption/continuation, asynchronous-checkpoint barriers, mode-change deadlock regression, load-graph and command checks passed.
+- `npm run test:packed`: clean production installation and actual OMP offline catalog load passed without starting ACP; temporary package/consumer data removed.
+- Four live Flash Low requests, split into `--text-only` and `--tools-only`, using a 45-second per-request probe deadline. Native tools and supplemental usage queries were disabled only in isolated test state. Both interrupted turns returned official `cancelled`, reused the same session, avoided cold history replay, and answered the follow-up exactly `NEW_REQUEST_OK`.
+
+| Live scenario, one sample each | Cancel signal to terminal response | Follow-up local dispatch | Follow-up total |
+| --- | ---: | ---: | ---: |
+| Text output interruption | 10.608 ms | 1.944 ms | 3910.457 ms |
+| Synthetic MCP tool interruption | 7.870 ms | 1.984 ms | 2157.652 ms |
+
+These live samples validate successful integration, not a measured before/after speedup or cache-hit-rate change. Each sent one cancel notification; concurrent overlapping-caller cancellation deduplication was not changed. Test connections and owned isolated sessions/state were retired in `finally`. No Argon calls, user configuration edits, publication or local plugin installation were performed.

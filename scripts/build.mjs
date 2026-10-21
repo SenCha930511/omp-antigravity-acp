@@ -22,7 +22,7 @@ const exports = [
 const result = await build({
   stdin: {
     contents: [
-      ...exports.map(([names, file]) => `export { ${names} } from ${JSON.stringify(path.join(upstream, "src", file))};`),
+      ...exports.map(([names, file]) => `export { ${names} } from ${JSON.stringify(file === "acp/session-store.ts" ? path.join(root, "extension/session-store.ts") : path.join(upstream, "src", file))};`),
       `export { TierConnection } from ${JSON.stringify(path.join(root, "extension/tier-connection.ts"))};`,
       `export { SessionCleanup } from ${JSON.stringify(path.join(root, "extension/session-cleanup.ts"))};`,
       'export { Type } from "typebox";',
@@ -53,6 +53,9 @@ const result = await build({
       });
       builder.onResolve({ filter: /^\.\/stream\/usage\.js$/ }, ({ importer }) => {
         if (importer === path.join(upstream, "src/runtime.ts")) return { path: path.join(root, "extension/usage.ts") };
+      });
+      builder.onResolve({ filter: /^\.\/acp\/session-store\.js$/ }, ({ importer }) => {
+        if (importer === path.join(upstream, "src/runtime.ts")) return { path: path.join(root, "extension/session-store.ts") };
       });
       builder.onLoad({ filter: /\/src\/runtime\.ts$/ }, async ({ path: file }) => {
         if (file !== path.join(upstream, "src/runtime.ts")) return;
@@ -160,6 +163,60 @@ const result = await build({
           }
           contents = contents.replace(patch.anchor, patch.replacement);
         }
+        // Convert every store/checkpoint call at its owning async boundary.
+        // Never hide an asynchronous write behind the upstream synchronous API.
+        const asyncPatches = [
+          ["private persistBinding(binding: Binding): void", "private async persistBinding(binding: Binding): Promise<void>"],
+          ["private noteContinuationInstructions(binding: Binding, context: Context): void", "private async noteContinuationInstructions(binding: Binding, context: Context): Promise<void>"],
+          ["private async closeBindings(): Promise<void> {", "private async closeBindings(): Promise<void> {\n const closingTurns = [...this.resolvedBindings].flatMap(binding => binding.turnCompletion ? [binding.turnCompletion] : []);"],
+          ["\t\tthis.persistBinding(createdBinding);", "\t\tthis.persistBinding(createdBinding);\n\t\tthis.assertEpoch(epoch);"],
+          ["if (removeSaved && binding.piSessionId) this.sessionStore?.remove(binding.piSessionId);\n\t\t\tthis.bindings.delete(key);", "this.bindings.delete(key);\n\t\t\tif (removeSaved && binding.piSessionId) this.sessionStore?.remove(binding.piSessionId);"],
+        ];
+        for (const [anchor, replacement] of asyncPatches) {
+          if (contents.split(anchor).length !== 2) throw new Error(`Pinned async store seam changed: ${anchor}`);
+          contents = contents.replace(anchor, replacement);
+        }
+        for (const [anchor, replacement, count] of [
+          ["this.persistBinding(", "await this.persistBinding(", 3],
+          ["this.noteContinuationInstructions(binding, context);", "const continuationTurn = binding.turnCompletion; await this.noteContinuationInstructions(binding, context); if (!continuationTurn || binding.turnCompletion !== continuationTurn || binding.abortRequested || options.signal?.aborted || !binding.connection.process.alive) throw abortError();", 2],
+          ["this.sessionStore?.", "await this.sessionStore?.", 8],
+        ]) {
+          if (contents.split(anchor).length !== count + 1) throw new Error(`Pinned store call sites changed: ${anchor}`);
+          contents = contents.replaceAll(anchor, replacement);
+        }
+        const flushAnchor = "\n\tprivate async runQueued(";
+        const beforeQueue = contents.slice(0, contents.indexOf(flushAnchor));
+        const endClose = beforeQueue.lastIndexOf("\n\t}");
+        // Await active turns' checkpoint writes, not queued callers which may
+        // themselves be waiting for this permission-mode change to complete.
+        contents = contents.slice(0, endClose) + "\n\t\tawait Promise.allSettled(closingTurns);\n\t\tawait this.sessionStore?.flush?.();" + contents.slice(endClose);
+        const classStart = contents.indexOf("export class AntigravityRuntime {");
+        const helpersStart = contents.indexOf("\nfunction messagesFingerprint(");
+        if (classStart < 0 || helpersStart < classStart) throw new Error("Pinned runtime class seam changed");
+        const methods = contents.slice(classStart, helpersStart)
+          .replaceAll("messagesFingerprint(", "this.ompMessagesFingerprint(")
+          .replaceAll("messageFingerprint(", "this.ompMessageFingerprint(")
+          .replaceAll("piToolFingerprint(", "this.ompToolsFingerprint(");
+        contents = contents.slice(0, classStart) + methods + contents.slice(helpersStart);
+        contents = contents.replace("export class AntigravityRuntime {", `export class AntigravityRuntime {
+          private readonly ompSystemMemo = createStructuredFingerprintMemo();
+          private readonly ompToolsMemo = createStructuredFingerprintMemo();
+          private ompMessagesFingerprint(messages: Context["messages"]): string { return messagesFingerprint(messages, this.ompSystemMemo); }
+          private ompMessageFingerprint(message: Context["messages"][number]): string { return messageFingerprint(message, this.ompSystemMemo); }
+          private ompToolsFingerprint(tools: NonNullable<Context["tools"]>): string { return this.ompToolsMemo(tools, () => piToolFingerprint(tools)); }
+        `);
+        const fingerprintPatches = [
+          ['function messagesFingerprint(messages: Context["messages"]): string {', 'function messagesFingerprint(messages: Context["messages"], systemMemo?: any): string {'],
+          ['const fingerprints = messages.map(messageFingerprint);', 'const fingerprints = messages.map(message => messageFingerprint(message, systemMemo));'],
+          ['function messageFingerprint(message: Context["messages"][number]): string {', 'function messageFingerprint(message: Context["messages"][number], systemMemo?: any): string {'],
+          ['return ompMessageFingerprintMemo(message, value, () => createHash("sha256").update(canonicalJson(value)).digest("hex"));', 'const compute = () => createHash("sha256").update(canonicalJson(value)).digest("hex"); return message.role === "system" && systemMemo ? systemMemo(value, compute) : ompMessageFingerprintMemo(message, value, compute);'],
+          ['await this.sessionStore?.flush?.();', 'try { await this.sessionStore?.flush?.(); } finally { this.ompSystemMemo.clear(); this.ompToolsMemo.clear(); }'],
+        ];
+        for (const [anchor, replacement] of fingerprintPatches) {
+          if (contents.split(anchor).length !== 2) throw new Error(`Pinned structured fingerprint seam changed: ${anchor}`);
+          contents = contents.replace(anchor, replacement);
+        }
+        contents = `import { createStructuredFingerprintMemo } from ${JSON.stringify(path.join(root, "extension/structured-fingerprint.ts"))};\n` + contents;
         contents = `import { drainCancelledTurn } from ${JSON.stringify(path.join(root, "extension/turn-cancellation.ts"))};\n` + contents;
         contents = `import { createHistoryFingerprintMemo } from ${JSON.stringify(path.join(root, "extension/history-fingerprint.ts"))};\nconst ompMessageFingerprintMemo = createHistoryFingerprintMemo();\n` + contents;
         return { contents, loader: "ts" };

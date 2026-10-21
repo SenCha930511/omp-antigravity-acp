@@ -1,6 +1,7 @@
 // Offline: real built runtime/connection code, deterministic fake transport.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { AntigravityRuntime, TierConnection } from "../extension/runtime.mjs";
 
 const model = { id: "gemini-3.8-flash", name: "Flash", api: "antigravity-acp", provider: "antigravity-acp",
@@ -11,7 +12,7 @@ const partial = () => ({ role: "assistant", provider: model.provider, model: mod
 const modes = { currentModeId: "yolo", availableModes: [{ id: "yolo", name: "Yolo" }] };
 const models = { currentModelId: model.id, availableModels: [{ modelId: model.id, name: "Flash" }] };
 
-function fixture() {
+function fixture(persist?: (record: any) => Promise<void>) {
   const connections: any[] = [], runtimes: any[] = [];
   const saved = new Map<string, any>();
   let holdNext = false;
@@ -42,7 +43,7 @@ function fixture() {
   };
   function create() {
     const r: any = new AntigravityRuntime(factory, "yolo", { get: (id: string) => saved.get(id),
-      save: (record: any) => saved.set(record.piSessionId, record), remove: (id: string) => saved.delete(id) });
+      save: (record: any) => persist ? persist(record).then(() => saved.set(record.piSessionId, record)) : saved.set(record.piSessionId, record), remove: (id: string) => saved.delete(id) });
     runtimes.push(r); return r;
   }
   async function run(r: any, messages: any[], signal?: AbortSignal) {
@@ -161,6 +162,49 @@ for (const edited of [false, true]) {
   } finally { await f.close(); }
 }
 console.log("Cached long history reuses acknowledged sessions; in-place edits force reconstruction: PASS");
+
+for (const shutdown of [false, true]) {
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = fixture(async record => { if (record.ompCancelledCheckpoint) { entered.resolve(); await release.promise; } });
+  try {
+    const r = f.create(), controller = new AbortController();
+    const old = await f.held(r, controller.signal); controller.abort();
+    await entered.promise;
+    let finished = false;
+    const next = shutdown ? r.close().then(() => { finished = true; }) :
+      f.run(r, [user("OLD"), partial(), user("AFTER_ASYNC_CHECKPOINT")]).then(() => { finished = true; });
+    await delay(20);
+    assert.equal(finished, false, "Follow-up/shutdown must wait for the cancellation checkpoint write");
+    assert.equal(old.connection.prompts.length, 1);
+    release.resolve(); await next; await old.result;
+    if (!shutdown) assert.equal(old.connection.prompts.length, 2);
+  } finally { release.resolve(); await f.close(); }
+}
+{
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+  const f = fixture(async () => { entered.resolve(); await release.promise; });
+  try {
+    const r = f.create(), pending = f.run(r, [user("INITIAL")]);
+    await entered.promise;
+    const closing = r.close(); release.resolve();
+    const events = await pending; await closing;
+    assert.ok(events.some(e => e.type === "error"));
+    assert.equal(r.resolvedBindings.size, 0, "Late initialization writes cannot resurrect a closed runtime");
+  } finally { release.resolve(); await f.close(); }
+}
+console.log("Async checkpoint barriers protect follow-ups, shutdown and cancelled initialization: PASS");
+
+{
+  const f = fixture();
+  try {
+    const r = f.create(), old = await f.held(r);
+    const changed = r.setPermissionMode("yolo");
+    const next = f.run(r, [user("AFTER_MODE_CHANGE")]);
+    const completed = await Promise.race([Promise.all([changed, next, old.result]).then(() => true), delay(1000).then(() => false)]);
+    assert.equal(completed, true, "Mode changes must not await callers queued behind the mode change itself");
+  } finally { await f.close(); }
+}
+console.log("Mode-change shutdown cannot deadlock with queued requests: PASS");
 
 {
   const base: any = Object.getPrototypeOf(TierConnection.prototype);

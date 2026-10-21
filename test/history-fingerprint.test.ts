@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { createHistoryFingerprintMemo } from "../extension/history-fingerprint.ts";
+import { AntigravityRuntime, Type } from "../extension/runtime.mjs";
 
 // Execute the fingerprint functions from the actual generated runtime, including
 // its guarded build seam, rather than testing a second copy of the algorithm.
@@ -17,6 +18,29 @@ const load = (memo: any) => Function("createHash", "ompMessageFingerprintMemo", 
 const baseline = load((_message: any, _value: any, compute: () => string) => compute());
 const optimized = load(createHistoryFingerprintMemo());
 const long = "中英文\n𠮷".repeat(1000);
+
+test("per-runtime system/tool memo matches original digests through TypeBox and in-place schema edits", async () => {
+  const runtime: any = new AntigravityRuntime(() => {}, "yolo");
+  const tools: any[] = [{ name: "read", description: "read", execute: async () => {},
+    parameters: Type.Object({ path: Type.String() }) }];
+  const system: any = { role: "system", content: long, toolsAdded: tools };
+  const check = () => {
+    assert.equal(runtime.ompMessageFingerprint({ ...system }), baseline.messageFingerprint(system));
+    const cached = runtime.ompToolsFingerprint([...tools]);
+    const memo = runtime.ompToolsMemo;
+    try {
+      runtime.ompToolsMemo = (_value: any, compute: () => string) => compute();
+      assert.equal(cached, runtime.ompToolsFingerprint(tools));
+    } finally { runtime.ompToolsMemo = memo; }
+  };
+  for (const edit of [() => {}, () => {}, () => { tools[0].parameters.properties.path.description = "edited"; },
+    () => { tools[0].parameters.required = []; }, () => { tools[0].description = "new description"; },
+    () => { system.sections = { policy: "new rules" }; },
+    () => { Object.defineProperty(tools[0].parameters, "hidden", { configurable: true, enumerable: false, value: 1 }); },
+    () => { delete tools[0].parameters.hidden; tools[0].parameters[Symbol.for("fixture")] = true; },
+    () => { delete tools[0].parameters[Symbol.for("fixture")]; tools[0].execute = async () => {}; }]) { edit(); check(); }
+  await runtime.close();
+});
 
 test("built runtime preserves exact digests after nested historical mutations", () => {
   const messages: any[] = [

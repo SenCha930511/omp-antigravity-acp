@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { registerOmpAdapter } from "../extension/index.ts";
 import { TierConnection, Type } from "../extension/runtime.mjs";
 if (!process.argv.includes("--live")) throw new Error("Pass --live; uses Flash quota only.");
+const timeoutMs = Number(process.env.OMP_ACP_PROBE_TIMEOUT_MS ?? 90_000);
+if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000) throw new Error("Invalid live probe timeout");
 const state = await fs.mkdtemp(path.join(os.tmpdir(), "omp-graceful-cancel-live-"));
 const sourceState = path.join(os.homedir(), ".omp/agent/antigravity-acp-provider");
 await fs.copyFile(path.join(sourceState, "models-cache.json"), path.join(state, "models-cache.json"));
@@ -39,7 +41,7 @@ try {
   await registerOmpAdapter({ on: (name: string, fn: Function) => hooks.set(name, fn),
     registerProvider: (_name: string, p: any) => { provider = p; }, registerTool() {}, registerCommand() {} }, state);
   const model = provider.models.find((m: any) => m.id === "gemini-3.8-flash"); assert.ok(model);
-  for (const mode of process.argv.includes("--text-only") ? ["text"] : ["text", "tools"]) {
+  for (const mode of process.argv.includes("--text-only") ? ["text"] : process.argv.includes("--tools-only") ? ["tools"] : ["text", "tools"]) {
     const id = `cancel-live-${mode}-${randomUUID()}`;
     const controller = new AbortController();
     const tools = mode === "tools" ? [{ name: "probe_read", description: "Return canned synthetic data only; no filesystem access.", parameters: Type.Object({ key: Type.String() }) }] : [];
@@ -48,7 +50,7 @@ try {
       : "Write 1500 numbered sentences about counting. Do not use tools. Start immediately." }];
     const first = calls.length; let interrupted: any;
     for await (const event of provider.streamSimple(model, { messages, tools }, { sessionId: id, reasoning: "low",
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]) })) {
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]) })) {
       if ((mode === "text" && event.type === "text_delta") || (mode === "tools" && event.type === "toolcall_end")) controller.abort();
       if (event.type === "error") interrupted = structuredClone(event.error);
     }
@@ -60,7 +62,7 @@ try {
     messages.push(interrupted, { role: "user", timestamp: Date.now(), content: "The previous request is cancelled. New request: reply with exactly NEW_REQUEST_OK. Do not use tools or resume the previous request." });
     let answer: any;
     const followupSubmitted = performance.now();
-    for await (const event of provider.streamSimple(model, { messages, tools }, { sessionId: id, reasoning: "low", signal: AbortSignal.timeout(90_000) })) {
+    for await (const event of provider.streamSimple(model, { messages, tools }, { sessionId: id, reasoning: "low", signal: AbortSignal.timeout(timeoutMs) })) {
       if (event.type === "error") throw new Error(event.error.errorMessage);
       if (event.type === "done") answer = event.message;
     }

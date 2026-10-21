@@ -1,0 +1,86 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { lock } from "proper-lockfile";
+import { resolvePiAgentDir } from "pi-antigravity-acp-provider/src/config.ts";
+
+interface SavedSessionRecord {
+  piSessionId: string; acpSessionId: string; acpModelId: string; cwd: string;
+  messageCount: number; historyFingerprint: string; lastActive: number;
+  expectedAssistantFingerprint?: string;
+  ompCancelledCheckpoint?: boolean; ompCancelledHadOutput?: boolean;
+}
+const tails = new Map<string, Promise<unknown>>();
+
+// Serialize instances in this process, then merge under the same cross-process
+// lock used by older releases. Callers must await writes at checkpoint boundaries.
+export class AcpSessionStore {
+  readonly file: string;
+  constructor(file = path.join(resolvePiAgentDir(), "antigravity-acp-provider", "sessions.json")) {
+    this.file = path.resolve(file);
+  }
+  private enqueue<T>(work: () => Promise<T>): Promise<T> {
+    const result = (tails.get(this.file) ?? Promise.resolve()).catch(() => {}).then(work);
+    tails.set(this.file, result);
+    void result.finally(() => { if (tails.get(this.file) === result) tails.delete(this.file); }).catch(() => {});
+    return result;
+  }
+  async flush(): Promise<void> { await tails.get(this.file); }
+  get(id: string): Promise<SavedSessionRecord | undefined> {
+    return this.enqueue(async () => (await this.read()).find(record => record.piSessionId === id &&
+      Date.now() - record.lastActive <= 30 * 24 * 60 * 60_000));
+  }
+  save(record: SavedSessionRecord): Promise<void> {
+    const captured = { ...record };
+    return this.update(async () => {
+      const records = (await this.read()).filter(value => value.piSessionId !== captured.piSessionId);
+      records.push(captured);
+      records.sort((a, b) => b.lastActive - a.lastActive);
+      await this.write(records.slice(0, 256));
+    });
+  }
+  remove(id: string): Promise<void> {
+    return this.update(async () => this.write((await this.read()).filter(record => record.piSessionId !== id)));
+  }
+  clear(): Promise<void> { return this.update(() => fs.rm(this.file, { force: true })); }
+  private update(work: () => Promise<void>): Promise<void> {
+    return this.enqueue(async () => {
+      await fs.mkdir(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      const deadline = Date.now() + 5000;
+      let compromised: Error | undefined;
+      let release: (() => Promise<void>) | undefined;
+      for (;;) {
+        try {
+          release = await lock(this.file, { realpath: false, stale: 30_000, retries: 0,
+            onCompromised: (error: Error) => { compromised = error; } });
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ELOCKED" || Date.now() >= deadline) throw error;
+          await delay(10);
+        }
+      }
+      try { if (compromised) throw compromised; await work(); if (compromised) throw compromised; }
+      finally { await release(); }
+    });
+  }
+  private async read(): Promise<SavedSessionRecord[]> {
+    let raw: string;
+    try { raw = await fs.readFile(this.file, "utf8"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("Invalid ACP session registry; refusing to overwrite it");
+    return parsed.filter((record): record is SavedSessionRecord => Boolean(record) && typeof record === "object" &&
+      ["piSessionId", "acpSessionId", "acpModelId", "cwd", "historyFingerprint"].every(key => typeof record[key] === "string") &&
+      Number.isSafeInteger(record.messageCount) && record.messageCount >= 0 && Number.isFinite(record.lastActive) &&
+      (record.expectedAssistantFingerprint === undefined || typeof record.expectedAssistantFingerprint === "string"));
+  }
+  private async write(records: SavedSessionRecord[]): Promise<void> {
+    if (!records.length) { await fs.rm(this.file, { force: true }); return; }
+    const temporary = `${this.file}.${randomUUID()}.tmp`;
+    try {
+      await fs.writeFile(temporary, JSON.stringify(records) + "\n", { mode: 0o600, flag: "wx" });
+      await fs.rename(temporary, this.file);
+    } finally { await fs.rm(temporary, { force: true }); }
+  }
+}

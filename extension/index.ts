@@ -63,8 +63,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
   const sessionStorePath = path.join(stateDir, "sessions.json");
   const sessionStore = new AcpSessionStore(sessionStorePath);
   const cleanup = new SessionCleanup(stateDir);
-  // AcpSessionStore.read is private upstream; count saved records from the
-  // file so /antigravity-acp account needs no live runtime.
+  // Count saved records from disk so /antigravity-acp account needs no runtime.
   const savedSessionCount = (): number => {
     try {
       const parsed: unknown = JSON.parse(fs.readFileSync(sessionStorePath, "utf8"));
@@ -132,6 +131,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
     } else {
       await runtimes.closeAll();
     }
+    await sessionStore.flush();
   });
 
   function syncProviderRegistration() {
@@ -150,7 +150,7 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
       await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
       // Finish the Antigravity-side cleanup even when the pool is empty,
       // instead of instantiating a runtime just to log it out.
-      sessionStore.clear();
+      await sessionStore.clear();
       clearAntigravityCredentials();
     },
     closeAllRuntimes: () => runtimes.closeAll(),
