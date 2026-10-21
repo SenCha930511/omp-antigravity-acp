@@ -30,7 +30,9 @@ let command: any;
 try {
   let keychainEntry = true;
   let flushOnce = false;
+  let keychainEmail: string | undefined = "kc-test@example.com";
   keychain.present = () => { keychainCalls.push("present"); return keychainEntry; };
+  keychain.accountEmail = () => keychainEmail;
   keychain.remove = () => {
     keychainCalls.push("remove");
     if (!keychainEntry) return false;
@@ -67,7 +69,7 @@ try {
     },
     refreshProvider: async () => { refreshCalls++; },
   } };
-  ompCredentials.set("antigravity-acp", { type: "oauth", refresh: MARKER, access: MARKER, expires: Number.MAX_SAFE_INTEGER, authorizedAt: 1234567890123 });
+  ompCredentials.set("antigravity-acp", { type: "oauth", refresh: MARKER, access: MARKER, expires: Number.MAX_SAFE_INTEGER, authorizedAt: 1234567890123, email: "marker@example.com" });
   const sessionRecord = {
     piSessionId: "018f24e1-7cbb-7000-8000-000000000001", acpSessionId: "018f24e1-7cbb-7000-8000-000000000002",
     acpModelId: "gemini-3.8-flash", cwd: stateDir, messageCount: 2, historyFingerprint: "f".repeat(64),
@@ -79,14 +81,23 @@ try {
   await command.handler("account", context);
   const account = notices.pop();
   assert.match(account, /Antigravity ACP account/);
+  assert.match(account, /Google account: kc-test@example\.com/);
   assert.match(account, /Authentication: missing/);
   assert.match(account, /Credential storage \(preflight\): server default \(expected: no refreshable token file to reuse\)/);
-  assert.match(account, /OMP marker record: present, authorized 2009-02-13T23:31:30.123Z \(non-secret managed marker\)/);
+  assert.match(account, /OMP marker record: present, authorized 2009-02-13T23:31:30\.123Z as marker@example\.com \(non-secret managed marker\)/);
   assert.match(account, /OMP auth source: local store \(oauth marker\)/);
   assert.match(account, /Saved ACP sessions: 1/);
   assert.match(account, /Requested permission mode: yolo/);
   assert.match(account, /Active bindings: 0/);
   await assert.rejects(command.handler("account extra", context), /Usage:/);
+
+  // A stored id_token file takes precedence over the keychain for the account.
+  const b64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  await fs.mkdir(path.join(geminiHome, "antigravity-acp"), { recursive: true });
+  await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"),
+    JSON.stringify({ id_token: `${b64url({ alg: "RS256" })}.${b64url({ email: "acp-file@example.com" })}.sig` }));
+  await command.handler("account", context);
+  assert.match(notices.pop(), /Google account: acp-file@example\.com/);
 
   // login: upstream OAuth flow stubbed at loginGoogle; the command must map
   // OMP dialogs onto the upstream interaction and return the pasted callback.
@@ -107,6 +118,7 @@ try {
   const loginNotice = notices.join("\n");
   assert.ok(loginNotice.includes("Stub login progress"));
   assert.ok(loginNotice.includes("https://accounts.google.com/o/oauth2/v2/auth?scope=test"));
+  assert.ok(loginNotice.includes("as kc-test@example.com"), notices.join(" | "));
   assert.ok(loginNotice.includes("fresh sign-in"), notices.join(" | "));
   await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
   assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8").catch(() => "{}")).auth, undefined);
@@ -133,9 +145,12 @@ try {
   await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
   assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8").catch(() => "{}")).auth, undefined);
   assert.equal(ompCredentials.size, 0);
+  // The keychain stub mirrors the removed ACP item after logout.
+  keychainEmail = undefined;
   // The next request must build a fresh runtime pool entry, not the closed one.
   await command.handler("account", context);
   const afterLogout = notices.pop();
+  assert.match(afterLogout, /Google account: not signed in/);
   assert.match(afterLogout, /Authentication: missing/);
   assert.match(afterLogout, /OMP marker record: not stored; run \/login or \/antigravity-acp login/);
   assert.match(afterLogout, /Saved ACP sessions: 0/);

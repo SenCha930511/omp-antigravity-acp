@@ -1,6 +1,11 @@
 # Changelog
 
 
+## 0.1.13 — 2026-10-21
+
+- Show the signed-in Google account: `/antigravity-acp account` extracts the email claim from the ACP server's stored id_token (token file first, then the ACP keychain item), logins record it on OMP's marker credential so OMP's account list can label it, and login confirmations name the account.
+- Only the ACP-owned keychain item is ever read; the agy CLI's separate item stays untouched, and token bytes are never logged or persisted.
+
 ## 0.1.12 — 2026-10-21
 
 - Always start a fresh Google sign-in for OMP `/login` and `/antigravity-acp login`: stored credentials and this process's old-account servers are dropped first, so a new server process cannot silently reuse the saved login and keep the previous account.

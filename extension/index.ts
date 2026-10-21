@@ -12,7 +12,7 @@ import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
 import { loadNativeToolMode, loadToolPolicy, saveNativeToolMode, saveDebugToolUpdates } from "./tool-policy.ts";
-import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials, describeCredentialStorage, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter, SessionCleanup } from "./runtime.mjs";
+import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials, resolveAntigravityAcpDirectory, describeCredentialStorage, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter, SessionCleanup } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
 
@@ -36,7 +36,35 @@ export const keychain = {
       return true;
     } catch { return false; }
   },
+  // Extract only the email claim from the ACP item's stored id_token. The
+  // token bytes stay in this process and are never logged or persisted; the
+  // agy CLI's separate keychain item is never read.
+  accountEmail(): string | undefined {
+    if (process.platform !== "darwin") return undefined;
+    try {
+      const raw = execFileSync("/usr/bin/security", ["find-generic-password", "-s", "gemini", "-a", "antigravity-acp", "-w"], { timeout: 3000 });
+      return emailFromTokenJson(raw.toString("utf8"));
+    } catch { return undefined; }
+  },
 };
+
+function emailFromTokenJson(raw: string): string | undefined {
+  try {
+    const idToken = JSON.parse(raw)?.id_token;
+    if (typeof idToken !== "string" || !idToken.includes(".")) return undefined;
+    const claims = JSON.parse(Buffer.from(idToken.split(".")[1], "base64url").toString("utf8"));
+    return typeof claims.email === "string" && claims.email.includes("@") ? claims.email : undefined;
+  } catch { return undefined; }
+}
+
+// The signed-in Google account, from the ACP server's own stored token. The
+// token file is preferred because it needs no keychain access.
+function antigravityAccountEmail(): string | undefined {
+  try {
+    return emailFromTokenJson(fs.readFileSync(path.join(resolveAntigravityAcpDirectory(), "acp_token.json"), "utf8"));
+  } catch { /* keychain storage or signed out */ }
+  return keychain.accountEmail();
+}
 
 // Timing knobs for following OMP-side logouts; mutable so offline tests can
 // run the delayed detection without real waits.
@@ -55,6 +83,7 @@ function ompCredentialSummary(ctx: any) {
     return {
       present: true,
       record: stored.refresh === MARKER ? "non-secret managed marker" : "oauth credential",
+      email: typeof stored.email === "string" && stored.email ? stored.email : undefined,
       authorizedAt: typeof stored.authorizedAt === "number" ? new Date(stored.authorizedAt).toISOString() : undefined,
     };
   } catch (error: any) {
@@ -319,7 +348,8 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           },
         });
         const auth = inspectAntigravityAuth();
-        ctx.ui.notify(`Antigravity Google login finished — fresh sign-in; ACP auth: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}.`, "info");
+        const email = antigravityAccountEmail();
+        ctx.ui.notify(`Antigravity Google login finished${email ? ` as ${email}` : ""} — fresh sign-in; ACP auth: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}.`, "info");
         return;
       }
       if (command === "logout") {
@@ -355,12 +385,13 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         const snapshot = await runtime.snapshot();
         const omp = ompCredentialSummary(ctx);
         const marker = omp.present === undefined ? "unknown (host did not expose the credential store)"
-          : omp.present ? `present, authorized ${omp.authorizedAt ?? "unknown time"} (${omp.record})`
+          : omp.present ? `present, authorized ${omp.authorizedAt ?? "unknown time"}${omp.email ? ` as ${omp.email}` : ""} (${omp.record})`
           : "not stored; run /login or /antigravity-acp login";
         // Mirrors the upstream provider's status/doctor wording for the shared
         // fields, with OMP-specific lines in the same style.
         ctx.ui.notify([
           "Antigravity ACP account",
+          `Google account: ${antigravityAccountEmail() ?? "not signed in"}`,
           `Authentication: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}`,
           `Credential storage (preflight): ${describeCredentialStorage()}`,
           `OMP marker record: ${marker}`,
@@ -538,7 +569,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
             // Always offer a fresh Google sign-in; without this a new server
             // process silently reuses the saved login and keeps the old account.
             await beginFreshGoogleLogin();
-            return runtimes.get().provider.auth.oauth.login({
+            const result = await runtimes.get().provider.auth.oauth.login({
               signal: callbacks.signal,
               notify(event: any) {
                 if (event.links?.length) {
@@ -547,6 +578,10 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
               },
               prompt: (request: any) => callbacks.onPrompt({ message: request.message, placeholder: request.placeholder }),
             });
+            // Record the signed-in account on the marker credential so OMP's
+            // account list can label it; the email is identity data, not a secret.
+            const email = antigravityAccountEmail();
+            return email ? { ...result, email } : result;
           },
           refreshToken: (credentials: any) => runtimes.get().provider.auth.oauth.refresh(credentials),
           getApiKey: () => MARKER,

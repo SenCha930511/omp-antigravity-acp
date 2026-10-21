@@ -11,7 +11,7 @@ const exports = [
   ["createAntigravityProvider", "provider.ts"],
   ["AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND", "runtime.ts"],
   ["loadConfig, savePermissionMode", "config.ts"],
-  ["inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials", "acp/antigravity.ts"],
+  ["inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials, resolveAntigravityAcpDirectory", "acp/antigravity.ts"],
   ["describeCredentialStorage", "acp/credential-storage.ts"],
   ["projectModels", "models.ts"],
   ["AcpSessionStore", "acp/session-store.ts"],

@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.12 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.13 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -56,7 +56,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.12** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.13** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -80,7 +80,7 @@ omp plugin install npm:omp-antigravity-acp-provider
 To pin a specific release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp-provider@0.1.12
+omp plugin install npm:omp-antigravity-acp-provider@0.1.13
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
@@ -151,7 +151,7 @@ After upgrading from an older adapter, run `/antigravity-acp refresh` once to re
 
 | Command | Purpose |
 | --- | --- |
-| `/antigravity-acp account` | Authentication state on both the OMP and Antigravity sides |
+| `/antigravity-acp account` | Signed-in Google account and authentication state on both the OMP and Antigravity sides |
 | `/antigravity-acp login` | Run the Antigravity Google authorization in a command dialog |
 | `/antigravity-acp logout` | Clear Antigravity credentials, saved ACP sessions and OMP's marker record |
 | `/antigravity-acp status` | Runtime, confirmed thinking and usage information |
@@ -319,7 +319,7 @@ See the [0.1.8 context/compaction and usage benchmark](docs/context-compaction-0
 
 `npm run test:usage` uses Bun and mocked protocol responses to verify restored-session baselines, counter resets, query failures and advertised-command gating without starting ACP. `bun scripts/verify-continuity-live.ts --live` is a separate Flash-only probe of long history, synthetic tools, usage accounting and idle process reclamation/restoration; it consumes quota. Its one-second idle setting is isolated to the test process and is not the production default.
 
-`npm run test:auth` uses Bun with an isolated `GEMINI_HOME`, a stubbed keychain and a stubbed OAuth flow to verify the account view, login dialog mapping, logout cleanup, the active-request guard and the credential-store watch behind OMP-logout following (removal, automatic-disable suppression, re-login cancellation, opt-out and busy deferral) without starting ACP. Real Google login and logout change account state, so they are not part of any automated test.
+`npm run test:auth` uses Bun with an isolated `GEMINI_HOME`, a stubbed keychain and a stubbed OAuth flow to verify the account view (including Google-account email extraction from the stored id_token), login dialog mapping, logout cleanup, the active-request guard and the credential-store watch behind OMP-logout following (removal, automatic-disable suppression, re-login cancellation, opt-out and busy deferral) without starting ACP. Real Google login and logout change account state, so they are not part of any automated test.
 
 `npm run test:packed` additionally requires OMP on PATH. It installs the exact npm tarball into a temporary consumer directory with development dependencies omitted and install scripts disabled, checks runtime assets, and loads its model catalog with ACP execution disabled. It downloads production dependencies and removes the temporary installation afterward.
 
