@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Prevent new or edited user requests from being swallowed by a pending tool/permission continuation after interruption.
-- Retire aborted ACP bindings and saved resume mappings before accepting another prompt; keep genuine tool continuations warm.
+- Reuse ACP sessions after acknowledged cancellation when accepted history and partial output match; queue new requests behind cancellation and rebuild only on uncertain/edited state or forced close.
+- Persist cancellation checkpoints across idle restoration and skip supplemental usage queries on cancelled turns.
 - Separate replayed history from the current request explicitly and label cold tool handoffs as work already in progress.
 - Restore missing context-setting imports after the command refactor and include command/continuity regressions in the required checks.
 

@@ -41,7 +41,7 @@
     "test:commands": "bun scripts/test-tool-command.ts",
     "test:auth": "bun scripts/test-auth-command.ts",
     "test:cleanup": "node scripts/test-cleanup-runtime.ts",
-    "test:continuity": "node scripts/test-request-continuity.ts",
+    "test:continuity": "node scripts/test-request-continuity.ts && node scripts/test-graceful-cancellation.ts",
     "check": "npm run build && npm test && npm run test:cleanup && npm run test:continuity && npm run test:graph && npm run test:commands",
     "prepack": "npm run build",
     "prepublishOnly": "npm run check",

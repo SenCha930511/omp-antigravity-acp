@@ -1,6 +1,6 @@
 # ACP caching and graceful cancellation (2026-10-21)
 
-Research only. This does not replace the conservative interruption fix in commit `5b5c9c8`.
+The research below informed the guarded graceful-cancellation implementation following commit `5b5c9c8`. Original measurements remain distinguished from implementation validation below.
 
 ## Public guarantees and limits
 
@@ -29,11 +29,22 @@ The last usage delta spans **both the cancelled request and its follow-up**, bec
 
 The interrupted prompt returned the official terminal reason `cancelled`; the ACP process remained alive. The next request used **the same session ID** and returned exactly `NEW_REQUEST_OK`, without resuming counting. This validates a tool-free graceful-cancellation path, not all pending-tool/permission races or production OMP history bookkeeping.
 
-## Better cancellation policy to implement and validate
+## Implemented cancellation policy
 
 1. Stop old OMP tool/permission waits and detach the old writer; do not resolve stale results into a newer request.
 2. Send official `session/cancel` and wait for the original prompt's terminal response and updates. Keep new prompts queued during that drain.
 3. If cancellation is acknowledged (or the old prompt cleanly finishes), the transport is alive and OMP's accepted history matches the server checkpoint, advance the history fingerprint/message boundary correctly and reuse that session.
 4. Rebuild on timeout, process failure, edited/divergent history or any uncertain terminal state. Preserve the new-request continuation guard from `5b5c9c8`.
 
-Do not simply remove the abort invalidation: that would restore stale mappings without fixing pending-turn and transcript bookkeeping. A follow-up implementation needs offline regressions for late tool results/permissions, aborted partial assistant output, queued new prompts and forced-close fallback, then a Flash-only integration test through the actual OMP adapter. Argon was not used in this research.
+The adapter preserves the official terminal response through the pinned client wrapper, checkpoints accepted input plus emitted assistant output, and validates that fingerprint before reuse. Checkpoint flags survive idle shutdown/resume. Cancelled turns skip supplemental usage queries. The existing 1.5-second cancellation fallback is preserved.
+
+`npm run test:continuity` covers the built client/runtime: new/edited requests, ordinary tool continuations, queued new prompts, pending tool/permission cancellation, matching partial output, saved checkpoint restore, missing partial output, edited prefixes and nonresponsive cancellation. `bun scripts/verify-graceful-cancellation-live.ts --live` exercises the actual adapter with Flash Low, first interrupting a text response and then a synthetic MCP tool wait. It checks official cancellation acknowledgement, exact follow-up answer, unchanged ACP session ID and absence of a cold history replay. The live probe uses its own state/policies and retires only its sessions. Argon is never used.
+
+Observed on 2026-10-21 through the source adapter (four Flash Low inference requests):
+
+| Interrupted work | Official terminal reason | Follow-up session | Cold history replay | Follow-up answer |
+| --- | --- | --- | --- | --- |
+| Text generation | `cancelled` | unchanged | none | `NEW_REQUEST_OK` |
+| Synthetic MCP tool wait | `cancelled` | unchanged | none | `NEW_REQUEST_OK` |
+
+These are adapter integration checks, not a claim about every OMP frontend's handling of discarded partial output or a measured cache-hit-rate improvement. Production usage/accounting and native-tool settings were not changed.

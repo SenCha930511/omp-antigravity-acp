@@ -71,7 +71,13 @@ const result = await build({
               "\t\tif ((binding.turnCompletion || binding.permission || binding.pendingTools.size > 0) &&",
               "\t\t\t(context.messages.findLastIndex(message => message.role === 'user') >= binding.pendingContextCount ||",
               "\t\t\t messagesFingerprint(context.messages.slice(0, binding.pendingContextCount)) !== binding.pendingContextFingerprint)) {",
-              "\t\t\tawait this.invalidateBinding(binding);",
+              "\t\t\tconst prefixMatches = context.messages.length >= binding.pendingContextCount &&",
+              "\t\t\t\tmessagesFingerprint(context.messages.slice(0, binding.pendingContextCount)) === binding.pendingContextFingerprint;",
+              "\t\t\tconst drained = prefixMatches && await drainCancelledTurn(binding, () => abortTurn(binding), options.signal);",
+              "\t\t\tif (!drained || !binding.connection.process.alive || binding.needsReconstruction ||",
+              "\t\t\t\t!['cancelled', 'end_turn'].includes(binding.ompTerminalStopReason)) {",
+              "\t\t\t\tawait this.invalidateBinding(binding);",
+              "\t\t\t}",
               "\t\t\tbinding = await this.getBinding(key, model, acpModelId, options.apiKey, writer, tools, options.signal);",
               "\t\t}",
               "",
@@ -79,9 +85,52 @@ const result = await build({
             ].join("\n"),
           },
           {
-            name: "retire aborted session",
+            name: "checkpoint acknowledged cancellation",
             anchor: "if (isAbort(error) || binding.abortRequested) abortTurn(binding);",
-            replacement: "if (isAbort(error) || binding.abortRequested) await this.invalidateBinding(binding);",
+            replacement: [
+              "if (isAbort(error) || binding.abortRequested) {",
+              "\t\t\t\tabortTurn(binding);",
+              "\t\t\t\tif (binding.connection.process.alive && !binding.needsReconstruction &&",
+              "\t\t\t\t\t['cancelled', 'end_turn'].includes(binding.ompTerminalStopReason)) {",
+              "\t\t\t\t\tbinding.messageCount = binding.pendingContextCount;",
+              "\t\t\t\t\tbinding.historyFingerprint = binding.pendingContextFingerprint;",
+              "\t\t\t\t\tbinding.expectedAssistantFingerprint = messageFingerprint((binding.writer ?? writer).message);",
+              "\t\t\t\t\tbinding.ompCancelledCheckpoint = true;",
+              "\t\t\t\t\tbinding.ompCancelledHadOutput = (binding.writer ?? writer).message.content.length > 0;",
+              "\t\t\t\t\tthis.persistBinding(binding);",
+              "\t\t\t\t} else await this.invalidateBinding(binding);",
+              "\t\t\t}",
+            ].join("\n"),
+          },
+          {
+            name: "reset cancellation acknowledgement per prompt",
+            anchor: "binding.instructionsFingerprint = instructionFingerprint(context);",
+            replacement: "binding.ompTerminalStopReason = undefined;\n\t\t\t" + "binding.instructionsFingerprint = instructionFingerprint(context);",
+          },
+          {
+            name: "record official terminal reason before abort handling",
+            anchor: "if (binding.abortRequested) throw abortError();",
+            replacement: "binding.ompTerminalStopReason = response.stopReason;\n\t\t\tif (binding.abortRequested) throw abortError();",
+          },
+          {
+            name: "cancelled partial output must match retained OMP history",
+            anchor: "binding.needsReconstruction || binding.mode !== this.permissionMode ||",
+            replacement: [
+              "binding.needsReconstruction ||",
+              "\t\t\t\t(binding.ompCancelledCheckpoint && (context.messages[binding.messageCount]?.role === 'assistant'",
+              "\t\t\t\t\t? messageFingerprint(context.messages[binding.messageCount]) !== binding.expectedAssistantFingerprint",
+              "\t\t\t\t\t: binding.ompCancelledHadOutput)) || binding.mode !== this.permissionMode ||",
+            ].join("\n"),
+          },
+          {
+            name: "persist cancellation checkpoint flags",
+            anchor: "acpModelId: binding.modelId,",
+            replacement: "acpModelId: binding.modelId,\n\t\t\tompCancelledCheckpoint: binding.ompCancelledCheckpoint === true,\n\t\t\tompCancelledHadOutput: binding.ompCancelledHadOutput === true,",
+          },
+          {
+            name: "restore cancellation checkpoint flags",
+            anchor: "messageCount: restored && saved ? saved.messageCount : 0,",
+            replacement: "messageCount: restored && saved ? saved.messageCount : 0,\n\t\t\t\tompCancelledCheckpoint: restored && saved?.ompCancelledCheckpoint === true,\n\t\t\t\tompCancelledHadOutput: restored && saved?.ompCancelledHadOutput === true,",
           },
           {
             name: "connection retirement",
@@ -96,7 +145,7 @@ const result = await build({
           {
             name: "cleanup confirm",
             anchor: "this.persistBinding(binding);\n\t\t\tswitch (response.stopReason)",
-            replacement: "this.persistBinding(binding);\n\t\t\tif (response.stopReason === 'end_turn') { binding.connection.confirmReplacement?.(key, binding.session.sessionId); if (!persistent) binding.connection.discardSession?.(binding.session.sessionId); }\n\t\t\tswitch (response.stopReason)",
+            replacement: "if (response.stopReason !== 'cancelled') binding.ompCancelledCheckpoint = false;\n\t\t\tthis.persistBinding(binding);\n\t\t\tif (response.stopReason === 'end_turn') { binding.connection.confirmReplacement?.(key, binding.session.sessionId); if (!persistent) binding.connection.discardSession?.(binding.session.sessionId); }\n\t\t\tswitch (response.stopReason)",
           },
         ];
         let contents = await fs.readFile(file, "utf8");
@@ -106,7 +155,16 @@ const result = await build({
           }
           contents = contents.replace(patch.anchor, patch.replacement);
         }
+        contents = `import { drainCancelledTurn } from ${JSON.stringify(path.join(root, "extension/turn-cancellation.ts"))};\n` + contents;
         return { contents, loader: "ts" };
+      });
+      builder.onLoad({ filter: /\/src\/acp\/connection\.ts$/ }, async ({ path: file }) => {
+        if (file !== path.join(upstream, "src/acp/connection.ts")) return;
+        const source = await fs.readFile(file, "utf8");
+        const anchor = "if (aborting) finish(() => reject(abortError()));";
+        if (source.split(anchor).length !== 2) throw new Error("Pinned upstream prompt cancellation seam changed; review compatibility");
+        return { contents: source.replace(anchor,
+          "if (aborting && this.process.alive && ['cancelled', 'end_turn'].includes(value.stopReason)) finish(() => resolve(value));\n\t\t\t\t\telse if (aborting) finish(() => reject(abortError()));"), loader: "ts" };
       });
       builder.onLoad({ filter: /\/(?:process|runtime-manifest)\.ts$/ }, async ({ path: file }) => {
         const relative = path.relative(upstream, file).split(path.sep).join("/");

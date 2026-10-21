@@ -158,7 +158,7 @@ export class TierConnection extends AntigravityAcpConnection {
         const context = this.contextUsage.get(id);
         return context ? { ...value, _meta: { ...value._meta, ompContextTokens: context.used } } : value;
       };
-      if (response.usage || process.env.OMP_ACP_USAGE === "off" || this.usageMode === "off" || !this.usageCommands.has(id) || signal?.aborted) {
+      if (response.usage || response.stopReason === "cancelled" || process.env.OMP_ACP_USAGE === "off" || this.usageMode === "off" || !this.usageCommands.has(id) || signal?.aborted) {
         this.usageBaselines.delete(id);
         this.usageStatus.set(id, { source: response.usage ? "ACP response" : "unavailable", cache: "unknown" });
         return withContext(response);
