@@ -1,6 +1,16 @@
 # Changelog
 
 
+## 0.1.17 — 2026-10-21
+
+- Lazy command handling: `/antigravity-acp usage`, `refresh`, `account` and permission validation no longer instantiate an idle AntigravityRuntime; `account` reports the saved-session count and requested permission mode from stored state, and logout completes even when the runtime pool is empty (session store and credentials are cleared directly instead of creating a runtime just to log it out).
+- Strict command validation: unknown subcommands and stray arguments (`/antigravity-acp unknown`, `permissions invalid`, `refresh extra`, `tools extra`, `status extra`) now fail with explicit usage errors before any runtime work instead of silently falling through to the status display.
+- Hot-path and I/O savings: `buildPromptParts` reuses fully resolved context policies on the runtime hot path and stops shallow-copying message blocks or merging image arrays; `SessionCleanup` caches its policy by mtime+size and verifies the cleanup root once per collect; `CatalogStore` deduplicates `fetchDynamicModels` by cache-file stat and settings identity; the tool projection cache also hits when the host passes an equal-but-new tool array; `TierConnection` usage captures are keyed per session so concurrent `/usage` queries cannot clobber each other.
+- Shared helpers: one logout summary formatter, one `saveToolPolicy` writer, and one `splitLegacyEffort` parser replace their duplicated copies.
+- TypeScript rule compliance: adapter sources no longer use `ReturnType<typeof …>`, the `new Promise` constructor or `as unknown as RuntimeBundleView` casts; the runtime pool is typed directly as `SessionRuntimePool<RuntimeBundleView>`.
+- Faster test builds: `scripts/test.mjs` externalizes node_modules packages and enables code splitting, keeping the pinned upstream TypeScript bundled (Node cannot type-strip TypeScript inside node_modules). `extension/runtime.mjs` deliberately keeps its full bundle because OMP's marketplace launcher cannot resolve bare package imports in its dynamic-import subgraph.
+- Adds `test/commands.test.ts` covering no-runtime reporting and usage-error validation for the command handler.
+
 ## 0.1.16 — 2026-10-21
 
 - Fix the 0.1.15 marketplace regression where the adapter failed to load with `Cannot find package '@agentclientprotocol/sdk'`: the refactor had `catalog-store.ts` import `TierConnection` from the unbundled `tier-connection.ts` source, pulling the pinned upstream sources into OMP's launcher import path where OMP's extension loader cannot resolve bare package imports. `TierConnection` is imported from the prebuilt `extension/runtime.mjs` bundle again, keeping the load-time graph bundle-only.
