@@ -1,6 +1,6 @@
-# Resource management changes (unreleased)
+# Resource management changes (0.1.20)
 
-These changes extend the history/checkpoint optimizations in the Esc performance report. They do not change the official ACP transport or guarantee Google cache hits. npm/marketplace 0.1.19 does not contain this build yet.
+These changes extend the history/checkpoint optimizations in the Esc performance report and ship in npm/marketplace 0.1.20. They do not change the official ACP transport or guarantee Google cache hits.
 
 ## Correctness and concurrency
 

@@ -19,9 +19,9 @@ The repository keeps the OMP adapter sources separately and uses upstream versio
 
 ## Status
 
-The current source includes unreleased resource-management and standalone-packaging improvements; npm/marketplace 0.1.19 has not received them yet. New settings below apply after installing that build.
+Version 0.1.20 includes resource-management improvements, verified OMP-deletion reconciliation and standalone packaging. Restart OMP after upgrading to load the new code.
 
-Version 0.1.19 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.20 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.5, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -58,7 +58,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.19** prebuilt npm adapter on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. The published 0.1.19 still installs production dependencies and needs roughly **150 MiB**. The unreleased standalone build bundles the required code and supervisor assets with no production dependencies: a clean test installation occupied **2.6 MiB** (473 KiB tarball). This excludes the separately downloaded Google runtime. First preparation needs internet access; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.20** prebuilt npm adapter on first load. It disables npm install scripts and performs no local compilation. Node.js 22.19+ and npm must be on PATH. The standalone build bundles the required code and supervisor assets with no production dependencies: a clean test installation occupied approximately **2.6 MiB** (477 KiB tarball), down from roughly 150 MiB with the old dependency tree. This excludes the separately downloaded Google runtime. First preparation needs internet access; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -82,12 +82,12 @@ omp plugin install npm:omp-antigravity-acp-provider
 To pin a specific release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp-provider@0.1.19
+omp plugin install npm:omp-antigravity-acp-provider@0.1.20
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
 
-The upstream dependency declares Pi-specific peers, so package managers that automatically install peers may also fetch the Pi CLI. The OMP adapter does not invoke that CLI. This does not apply to source installs using this repository's `.npmrc`.
+The standalone npm package has no production dependencies or Pi CLI peers. Source development uses the pinned upstream build dependency and this repository's `.npmrc`.
 
 ## Find it with zmarketplace
 
@@ -120,7 +120,7 @@ npm run check
 
 The checked-in npm configuration disables automatic peer installation because the upstream package declares Pi-specific peers. This adapter explicitly supplies its runtime dependency on `pi-ai`; it does not need the Pi coding-agent CLI.
 
-The build produces `extension/runtime.mjs` and `THIRD_PARTY_LICENSES.txt`. They are ignored by Git, rebuilt locally and included in published npm tarballs. Supervisor and runtime catalog paths resolve against the installed upstream dependency, so the bundle does not embed the developer's home directory.
+The build produces `extension/runtime.mjs`, `extension/assets/` and `THIRD_PARTY_LICENSES.txt`. They are ignored by Git, rebuilt locally and included in published npm tarballs. Supervisor and runtime catalog paths resolve against these bundled assets, so the bundle does not embed the developer's home directory.
 
 For a temporary session, from this repository:
 
@@ -301,7 +301,7 @@ Timeout cleanup sacrifices ACP-only reasoning/checkpoint state for eligible unma
 
 ### Deleting an OMP conversation
 
-The unreleased build can reconcile deleted OMP journal files with their ACP mappings. On `session_start`, `session_switch` and `agent_end`, it records the file path only after reading a matching OMP session header and finding an adapter-owned ACP mapping. It supports the managed `sessions/` root beside the provider state directory, including named profiles. Custom/external storage and old mappings without a verified source remain protected until supported or observed again; merely installing the build does not identify every old mapping.
+Version 0.1.20 can reconcile deleted OMP journal files with their ACP mappings. On `session_start`, `session_switch` and `agent_end`, it records the file path only after reading a matching OMP session header and finding an adapter-owned ACP mapping. It supports the managed `sessions/` root beside the provider state directory, including named profiles. Custom/external storage and old mappings without a verified source remain protected until supported or observed again; merely installing the build does not identify every old mapping.
 
 With `conservative` or `timeout`, a tracked source must be absent on two cleanup checks at least 60 seconds apart, have no live ACP leases, and remain absent after a bounded search of the managed journal buckets for the same header ID. Moving/renaming a journal within those buckets updates its path. Missing/replaced storage roots, symlinks, malformed headers, permission errors and scan limits preserve data. Only then does cleanup conditionally remove the matching mapping and make the owned ACP session eligible for the existing deletion batches. Newer mappings are protected by the mapping store's lock. Turning cleanup `off` preserves both mapping and files.
 

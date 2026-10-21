@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.20 — 2026-10-21
 
 - Reconcile verified deleted OMP journals with owned ACP sessions: preserve live/moved/unknown sources, confirm absence across checks, remove mappings conditionally and honor cleanup off/conservative/timeout modes.
 - Validate the outer tool-projection cache against tool values, including in-place name/schema/array edits, before reusing bridge schemas and prompt guidance.
