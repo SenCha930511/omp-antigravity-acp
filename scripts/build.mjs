@@ -63,6 +63,27 @@ const result = await build({
             replacement: "buildPromptParts(context, fresh, unseenStart, { contextWindow: model.contextWindow, maxTokens: model.maxTokens, policy: model.ompContextPolicy })",
           },
           {
+            name: "new request supersedes continuation",
+            anchor: "\t\t// A permission tool result resumes the still-running ACP prompt rather than",
+            replacement: [
+              "\t\t// A new/edited user request is not a tool-result continuation of the",
+              "\t\t// previous ACP prompt. Never let old pending results swallow it.",
+              "\t\tif ((binding.turnCompletion || binding.permission || binding.pendingTools.size > 0) &&",
+              "\t\t\t(context.messages.findLastIndex(message => message.role === 'user') >= binding.pendingContextCount ||",
+              "\t\t\t messagesFingerprint(context.messages.slice(0, binding.pendingContextCount)) !== binding.pendingContextFingerprint)) {",
+              "\t\t\tawait this.invalidateBinding(binding);",
+              "\t\t\tbinding = await this.getBinding(key, model, acpModelId, options.apiKey, writer, tools, options.signal);",
+              "\t\t}",
+              "",
+              "\t\t// A permission tool result resumes the still-running ACP prompt rather than",
+            ].join("\n"),
+          },
+          {
+            name: "retire aborted session",
+            anchor: "if (isAbort(error) || binding.abortRequested) abortTurn(binding);",
+            replacement: "if (isAbort(error) || binding.abortRequested) await this.invalidateBinding(binding);",
+          },
+          {
             name: "connection retirement",
             anchor: "if (!persistent) await this.dropBinding(key, binding);",
             replacement: "if (!persistent || !binding.connection.process.alive) await this.dropBinding(key, binding);",

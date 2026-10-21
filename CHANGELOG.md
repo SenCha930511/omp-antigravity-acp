@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Prevent new or edited user requests from being swallowed by a pending tool/permission continuation after interruption.
+- Retire aborted ACP bindings and saved resume mappings before accepting another prompt; keep genuine tool continuations warm.
+- Separate replayed history from the current request explicitly and label cold tool handoffs as work already in progress.
+- Restore missing context-setting imports after the command refactor and include command/continuity regressions in the required checks.
+
 
 ## 0.1.18 — 2026-10-21
 

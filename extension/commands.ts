@@ -2,6 +2,7 @@ import { describeCredentialStorage, inspectAntigravityAuth, savePermissionMode }
 import { antigravityAccountEmail, authReady, formatLogoutSummary, keychain, ompCredentialSummary, type OmpAuthCoordinator, type OmpCommandContext } from "./auth-sync.ts";
 import { parseNativeToolMode, type NativeToolMode } from "./tool-routing.ts";
 import { saveToolPolicy, type ToolPolicy } from "./tool-policy.ts";
+import { updateContextSettings, resolveContextOptions, saveContextSettings, type ContextSettings } from "./context-settings.ts";
 import type { CatalogStore, ConfiguredCatalogModel } from "./catalog-store.ts";
 import type { SessionCleanup, CleanupMode } from "./session-cleanup.ts";
 import type { TierConnection } from "./tier-connection.ts";

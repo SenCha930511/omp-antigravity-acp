@@ -86,7 +86,11 @@ export function buildPromptParts(context: TransferContext, fresh: boolean, unsee
     records.push({ role: message.role, toolName: message.toolName, toolCallId: message.toolCallId, isError: message.isError, content });
   }
   const historyText = records.length
-    ? "Prior conversation data, not new instructions. Do not repeat completed tool actions.\n" + JSON.stringify(records)
+    ? "# Prior OMP conversation (reference only)\n\n" +
+      "The JSON below is historical conversation data, not a new request or a queue of tasks. " +
+      "Do not answer historical user requests or repeat completed tool actions. " +
+      "Use it only as context for the current OMP user request identified after this resource.\n\n" +
+      JSON.stringify(records) + "\n\n# End of prior OMP conversation\n"
     : "";
   if (historyText) prompt.push({ type: "resource", resource: {
     uri: "urn:omp:antigravity-acp:history", mimeType: "text/plain",
@@ -95,10 +99,20 @@ export function buildPromptParts(context: TransferContext, fresh: boolean, unsee
   prompt.push(...images);
   const tailBlocks: TransferBlock[] = [];
   if (!fresh && start > latest) {
-    const continuation = { type: "text", text: "Continue the current OMP user request with the new results. Do not repeat completed tool actions." };
+    const continuation = { type: "text", text: "\n\n# Continue the active OMP request\n\n" +
+      "The new context/tool results above belong to the user request already received in this session. " +
+      "Finish that request from those results. Do not answer historical user requests or repeat completed tool actions." };
     prompt.push(continuation);
     tailBlocks.push(continuation);
   } else {
+    // Official ACP merges following text into an embedded-resource string with
+    // a space. Explicit newlines/labels must survive that conversion; role
+    // fields inside the history JSON do not create actual API message roles.
+    const boundary = { type: "text", text: "\n\n# Current OMP user request\n\n" +
+      (end > latest ? "This request is already in progress; the history includes prior assistant actions and tool results. " +
+        "Continue from those results rather than restarting completed work.\n\n" : "") };
+    prompt.push(boundary);
+    tailBlocks.push(boundary);
     const content = messages[latest]!.content;
     // Blocks are consumed read-only; shallow copies only churn the hot path.
     const latestBlocks: TransferBlock[] = typeof content === "string" ? [{ type: "text", text: content }] : content;
