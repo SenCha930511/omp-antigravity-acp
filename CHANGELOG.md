@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reconcile verified deleted OMP journals with owned ACP sessions: preserve live/moved/unknown sources, confirm absence across checks, remove mappings conditionally and honor cleanup off/conservative/timeout modes.
 - Validate the outer tool-projection cache against tool values, including in-place name/schema/array edits, before reusing bridge schemas and prompt guidance.
 - Protect saved mappings and live leases during asynchronous session cleanup; add soft count/byte budgets, orphan grace, bounded background batches, lifecycle retries and status accounting. Conservative mode remains the default.
 - Limit idle runtimes with an LRU cap (default two), deduplicate concurrent catalog discovery/refresh and remove stale catalog entries.

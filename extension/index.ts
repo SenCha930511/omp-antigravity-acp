@@ -167,7 +167,15 @@ export async function registerOmpAdapter(pi: OmpHostApi, stateDir: string) {
     onSyncProvider: syncProviderRegistration,
   });
 
-  pi.on("session_start", async (_event: unknown, ctx: OmpCommandContext) => { auth.watchOmpCredentials(ctx); });
+  const trackOmpSource = async (_event: unknown, ctx: OmpCommandContext) => {
+    const id = ctx.sessionManager?.getSessionId?.(), file = ctx.sessionManager?.getSessionFile?.();
+    if (id && file) try { await cleanup.trackSource(id, file); } catch { /* Unproven or not-yet-persisted sources remain protected. */ }
+  };
+  pi.on("session_start", async (event: unknown, ctx: OmpCommandContext) => {
+    auth.watchOmpCredentials(ctx); await trackOmpSource(event, ctx); cleanup.start();
+  });
+  pi.on("agent_end", trackOmpSource);
+  pi.on("session_switch", trackOmpSource);
 
   pi.registerTool({
     name: PERMISSION_TOOL_NAME,

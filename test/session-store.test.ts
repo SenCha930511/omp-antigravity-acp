@@ -12,6 +12,16 @@ import { AcpSessionStore } from "../extension/runtime.mjs";
 
 const record = (id: string) => ({ piSessionId: id, acpSessionId: id, acpModelId: "flash", cwd: "/synthetic",
   messageCount: 1, historyFingerprint: "digest", lastActive: Date.now(), ompCancelledCheckpoint: true });
+
+test("conditional mapping removal preserves newer bindings and unrelated sessions", async () => fixture(async file => {
+  const store = new AcpSessionStore(file);
+  await store.save(record("chat")); await store.save(record("other"));
+  await store.save({ ...record("chat"), acpSessionId: "new-binding" });
+  assert.equal(await store.removeIfMatches("chat", "chat"), false);
+  assert.equal((await store.get("chat"))?.acpSessionId, "new-binding");
+  assert.equal(await store.removeIfMatches("chat", "new-binding"), true);
+  assert.ok(await store.get("other"));
+}));
 async function fixture(run: (file: string) => Promise<void>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-async-store-"));
   try { await run(path.join(root, "sessions.json")); }

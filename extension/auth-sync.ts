@@ -80,6 +80,7 @@ export interface OmpCommandContext {
   };
   sessionManager?: {
     getSessionId?: () => string | undefined;
+    getSessionFile?: () => string | undefined;
   };
   modelRegistry?: {
     refreshProvider?: (provider: string, mode?: string) => Promise<void>;

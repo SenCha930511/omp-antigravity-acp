@@ -26,6 +26,76 @@ function fixture(t: any) {
   return { root, acp, cleaner, create, session, exists, living, advance: (days: number) => { now += days * 86_400_000; } };
 }
 
+async function trackedSource(f: any, id: string) {
+  const root = path.join(f.root, "sessions"), file = path.join(root, "workspace", "chat.jsonl");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ type: "session", id: "omp-chat" }) + "\n");
+  const mappingFile = path.join(f.root, "state", "sessions.json");
+  fs.writeFileSync(mappingFile, JSON.stringify([{ piSessionId: "omp-chat", acpSessionId: id, acpModelId: "flash", cwd: f.root, messageCount: 1, historyFingerprint: "test", lastActive: Date.now() }]));
+  await f.cleaner.trackSource("omp-chat", file);
+  return { root, file, mappingFile };
+}
+
+test("deleted OMP source removes its mapping and owned ACP files only after two checks and lease release", async t => {
+  const f = fixture(t), id = f.session();
+  const token = await f.cleaner.acquire(id, true, 987654);
+  const source = await trackedSource(f, id);
+  fs.unlinkSync(source.file);
+  f.advance(1); await f.cleaner.collect(); assert.ok(f.exists(id), "live lease protects deleted source");
+  await f.cleaner.release(token); assert.ok(f.exists(id), "first missing observation only");
+  f.advance(30 / 86400); await f.cleaner.collect(); assert.ok(f.exists(id), "less than one minute");
+  f.advance(31 / 86400); assert.equal(await f.create().collect(), 1, "observation survives process restart");
+  assert.equal(f.exists(id), false); assert.equal(fs.existsSync(source.mappingFile), false);
+});
+
+test("closing, moving, restoring or unmounting an OMP source never proves deletion", async t => {
+  const f = fixture(t), id = f.session();
+  const token = await f.cleaner.acquire(id, true, 987654);
+  const source = await trackedSource(f, id);
+  await f.cleaner.release(token); f.advance(10); await f.cleaner.collect(); assert.ok(f.exists(id));
+  const moved = path.join(source.root, "other", "renamed.jsonl");
+  fs.mkdirSync(path.dirname(moved)); fs.renameSync(source.file, moved);
+  await f.cleaner.collect(); f.advance(1); await f.cleaner.collect(); assert.ok(f.exists(id), "search finds moved header id");
+  fs.unlinkSync(moved); await f.cleaner.collect();
+  fs.writeFileSync(moved, JSON.stringify({ type: "session", id: "omp-chat" }) + "\n");
+  f.advance(1); await f.cleaner.collect(); assert.ok(f.exists(id), "restoration cancels pending deletion");
+  fs.renameSync(source.root, source.root + "-offline");
+  f.advance(1); await f.cleaner.collect(); assert.ok(f.exists(id), "missing volume/root fails closed");
+  assert.ok(fs.existsSync(source.mappingFile));
+});
+
+test("off preserves deleted OMP sources and malformed relocation scans fail closed", async t => {
+  const f = fixture(t), id = f.session();
+  const token = await f.cleaner.acquire(id, true, 987654);
+  const source = await trackedSource(f, id);
+  f.cleaner.configure("off"); fs.unlinkSync(source.file); await f.cleaner.release(token);
+  f.advance(10); await f.cleaner.collect(); assert.ok(f.exists(id)); assert.ok(fs.existsSync(source.mappingFile));
+  f.cleaner.configure("conservative");
+  fs.writeFileSync(path.join(source.root, "broken.jsonl"), "not-json");
+  await f.cleaner.collect(); f.advance(10); await f.cleaner.collect(); assert.ok(f.exists(id));
+  assert.ok(f.cleaner.status().failures > 0);
+});
+
+test("deleted-source reconciliation recovers after mapping removal without losing ownership proof", async t => {
+  const f = fixture(t), id = f.session();
+  const token = await f.cleaner.acquire(id, true, 987654);
+  const source = await trackedSource(f, id);
+  fs.unlinkSync(source.file); await f.cleaner.release(token);
+  // Simulate the cross-file crash boundary: source evidence is durable, the
+  // mapping disappeared, but the registry's deletion flag was not committed.
+  fs.unlinkSync(source.mappingFile);
+  f.advance(61 / 86400);
+  assert.equal(await f.create().collect(), 1); assert.equal(f.exists(id), false);
+});
+
+test("an old mapping without a verified journal source is never inferred deleted", async t => {
+  const f = fixture(t), id = f.session();
+  const token = await f.cleaner.acquire(id, true, 987654);
+  fs.writeFileSync(path.join(f.root, "state", "sessions.json"), JSON.stringify([{ piSessionId: "unknown", acpSessionId: id }]));
+  await f.cleaner.release(token); f.advance(100); await f.cleaner.collect();
+  assert.ok(f.exists(id));
+});
+
 test("conservative cleanup waits for successful replacement AND old process release", async t => {
   const f = fixture(t); const old = f.session(), next = f.session();
   const lease = await f.cleaner.acquire(old, true, 987654);

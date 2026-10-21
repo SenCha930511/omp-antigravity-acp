@@ -43,6 +43,14 @@ export class AcpSessionStore {
   remove(id: string): Promise<void> {
     return this.update(async () => this.write((await this.read()).filter(record => record.piSessionId !== id)));
   }
+  removeIfMatches(id: string, acpSessionId: string): Promise<boolean> {
+    let removed = false;
+    return this.update(async () => {
+      const records = await this.read();
+      removed = records.some(record => record.piSessionId === id && record.acpSessionId === acpSessionId);
+      if (removed) await this.write(records.filter(record => record.piSessionId !== id || record.acpSessionId !== acpSessionId));
+    }).then(() => removed);
+  }
   clear(): Promise<void> { return this.update(() => fs.rm(this.file, { force: true })); }
   private update(work: () => Promise<void>): Promise<void> {
     return this.enqueue(async () => {

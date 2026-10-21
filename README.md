@@ -299,6 +299,14 @@ Cleanup targets only the registered UUID's `.db`, SQLite journal/WAL/SHM files, 
 
 Timeout cleanup sacrifices ACP-only reasoning/checkpoint state for eligible unmapped sessions. If that session is later requested through another history source, the adapter reconstructs it from OMP's retained history and can incur replay latency and a different token count. Cache expiry is not assumed or guaranteed. Ordinary mapped conversations remain resumable in every mode; budgets cannot bound the number of mapped OMP conversations you keep.
 
+### Deleting an OMP conversation
+
+The unreleased build can reconcile deleted OMP journal files with their ACP mappings. On `session_start`, `session_switch` and `agent_end`, it records the file path only after reading a matching OMP session header and finding an adapter-owned ACP mapping. It supports the managed `sessions/` root beside the provider state directory, including named profiles. Custom/external storage and old mappings without a verified source remain protected until supported or observed again; merely installing the build does not identify every old mapping.
+
+With `conservative` or `timeout`, a tracked source must be absent on two cleanup checks at least 60 seconds apart, have no live ACP leases, and remain absent after a bounded search of the managed journal buckets for the same header ID. Moving/renaming a journal within those buckets updates its path. Missing/replaced storage roots, symlinks, malformed headers, permission errors and scan limits preserve data. Only then does cleanup conditionally remove the matching mapping and make the owned ACP session eligible for the existing deletion batches. Newer mappings are protected by the mapping store's lock. Turning cleanup `off` preserves both mapping and files.
+
+This is eventual reconciliation, not a synchronous OMP delete callback. OMP must be running; periodic checks are 15 minutes apart, so idle detection commonly needs two checks (up to roughly 30 minutes after deletion). The cleanup command can trigger checks manually, but cannot bypass the one-minute confirmation interval or live leases. Closing, switching or archiving a conversation leaves its journal intact and does not request deletion. There are no model calls or continuous transcript watchers. Normal checks inspect tracked paths; relocation scans run only for missing sources and are shared within one sweep, bounded to 20,000 entries, four directory levels and 64 KiB per journal prefix.
+
 ### Optional timing diagnostics
 
 Use `/antigravity-acp diagnostics on`, then `/antigravity-acp diagnostics` to inspect timings for history/tool comparisons, session initialization/restoration, checkpoint writes, prompt/first-output and cancellation confirmation. `/antigravity-acp diagnostics reset` clears samples; `off` disables collection and clears them. This is separate from the tool-status debug switch.
