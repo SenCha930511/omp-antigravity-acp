@@ -19,7 +19,7 @@ The repository keeps the OMP adapter sources separately and installs upstream ve
 
 ## Status
 
-Version 0.1.11 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
+Version 0.1.12 supports all models advertised by the official ACP server. Tested with macOS, OMP 18.12.3, upstream provider 0.1.15 and official ACP runtime 1.4.1. Other platforms and OMP versions are not yet verified.
 
 Google's consumer-plan policies can restrict third-party agent access even through the official CLI or ACP executable. An official transport does not establish permission to use a subscription in OMP. Check the current [Antigravity FAQ](https://www.antigravity.google/docs/faq/) and [terms](https://antigravity.google/terms) for your account.
 
@@ -56,7 +56,7 @@ Or, inside OMP:
 
 Select **omp-antigravity-acp-provider** in the browser, install it, and restart OMP to load the provider.
 
-OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.11** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
+OMP's marketplace installer currently copies Git content without installing npm dependencies. This marketplace therefore ships a small source launcher that retrieves the exact published **0.1.12** prebuilt npm adapter and production dependencies on first load. It disables npm install scripts, skips Pi CLI peer installation, and performs no local compilation. Node.js 22.19+ and npm must be on PATH. First preparation needs internet access and roughly **150 MiB** of disk space; later loads reuse the installed cache without npm network access.
 
 The launcher stores its versioned dependencies in `.runtime/` inside the installed marketplace plugin's cache directory. Uninstalling the marketplace plugin removes that cache when it is no longer referenced by another scope. Google credentials and the separately downloaded official ACP runtime are unaffected.
 
@@ -80,7 +80,7 @@ omp plugin install npm:omp-antigravity-acp-provider
 To pin a specific release:
 
 ```sh
-omp plugin install npm:omp-antigravity-acp-provider@0.1.11
+omp plugin install npm:omp-antigravity-acp-provider@0.1.12
 ```
 
 Restart OMP after installation. The npm package includes the built adapter; users do not need esbuild or a manual build step. Disable any older ACP adapter for the same provider before loading this package.
@@ -139,6 +139,8 @@ This repository does not change an existing OMP installation or overwrite its se
 
 `/antigravity-acp login` runs the same Google authorization through a command dialog without touching OMP's stored account record; use it to re-authenticate or switch the Antigravity-side Google account. `/antigravity-acp account` shows the current authentication state on both sides.
 
+Both login paths always start a fresh Google sign-in: stored Antigravity credentials are cleared first, so the Google account chooser is always offered and a saved login cannot silently keep the previous account. The Google browser session itself is outside this adapter's control; pick the intended account (or "Use another account") on Google's consent screen.
+
 First use or login may download the official runtime. The observed macOS runtime occupies about **383 MiB**; size varies by platform/version. It lives outside this repository under `~/.local/opt/agy-acp/`. Do not remove it while ACP processes are running.
 
 If OMP's `enabledModels` whitelist is configured, add `antigravity-acp/*` alongside your existing entries in `~/.omp/agent/config.yml` to allow newly discovered models. Use individual `antigravity-acp/<server-model-id>` entries instead if you prefer a restricted list. The adapter does not rewrite that whitelist or any model-role preset.
@@ -177,7 +179,7 @@ The initial permission mode follows upstream configuration, whose default is `yo
 
 ### Sign out
 
-OMP's oauth contract has no provider-side logout hook, so `/logout` by itself only removes OMP's stored non-secret marker record. This adapter watches the credential store and finishes the Antigravity-side logout automatically: after `/logout` removes the marker, it closes this process's ACP runtimes, clears saved ACP session mappings, deletes the local token file and the settings auth choice, and removes the matching macOS keychain entry, then confirms with a notification. The cleanup waits for in-flight Antigravity requests to finish, a re-login before it runs cancels it, and automatic credential soft-disables (for example an expired refresh grant) never trigger it. Set `OMP_ACP_FOLLOW_LOGOUT=0` before starting OMP to keep OMP's `/logout` marker-only. `/antigravity-acp logout` performs the same complete logout in one command without waiting for OMP; it refuses to run while Antigravity requests are active. If its OMP-marker removal is unavailable through the host API, the command says so and OMP's `/logout` finishes that part.
+OMP's oauth contract has no provider-side logout hook, so `/logout` by itself only removes OMP's stored non-secret marker record. This adapter watches the credential store and finishes the Antigravity-side logout automatically: after `/logout` removes the marker, it closes this process's ACP runtimes, clears saved ACP session mappings, deletes the local token file and the settings auth choice, and removes the matching macOS keychain entry, then confirms with one line (`/antigravity-acp account` shows the details). The keychain removal waits for this adapter's ACP server processes to fully exit and verifies the deletion, because a dying server can flush its token back. The cleanup waits for in-flight Antigravity requests to finish, a re-login before it runs cancels it, and automatic credential soft-disables (for example an expired refresh grant) never trigger it. Set `OMP_ACP_FOLLOW_LOGOUT=0` before starting OMP to keep OMP's `/logout` marker-only. `/antigravity-acp logout` performs the same complete logout in one command without waiting for OMP; it refuses to run while Antigravity requests are active. If its OMP-marker removal is unavailable through the host API, the command says so and OMP's `/logout` finishes that part.
 
 The debug switch controls gray `[Antigravity tool: …]` and `[Antigravity tool update: …]` lines. It defaults to off and applies immediately to this process's active ACP connections. Normal OMP tool displays/results, real thought chunks and plan messages are preserved. The option is saved as `debugToolUpdates` in `omp-tools.json` alongside `nativeTools`; toggling either option preserves the other. Existing policy files without the debug field default to off. Other OMP processes need a restart to read a setting changed elsewhere. `OMP_ACP_TRACE=1` is a separate, opt-in terminal diagnostic setting.
 

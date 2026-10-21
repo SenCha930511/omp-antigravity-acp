@@ -28,8 +28,16 @@ const keychainCalls: string[] = [];
 const hooks = new Map<string, Function>();
 let command: any;
 try {
-  keychain.present = () => { keychainCalls.push("present"); return true; };
-  keychain.remove = () => { keychainCalls.push("remove"); return true; };
+  let keychainEntry = true;
+  let flushOnce = false;
+  keychain.present = () => { keychainCalls.push("present"); return keychainEntry; };
+  keychain.remove = () => {
+    keychainCalls.push("remove");
+    if (!keychainEntry) return false;
+    keychainEntry = false;
+    if (flushOnce) { flushOnce = false; setTimeout(() => { keychainEntry = true; }, 100); }
+    return true;
+  };
   await registerOmpAdapter({
     on(name: string, handler: Function) { hooks.set(name, handler); },
     registerProvider() {}, registerTool() {},
@@ -69,17 +77,15 @@ try {
 
   // account: read-only view over OMP marker, isolated ACP state and keychain.
   await command.handler("account", context);
-  const account = JSON.parse(notices.pop());
-  assert.equal(account.provider, "antigravity-acp");
-  assert.equal(account.ompCredential.present, true);
-  assert.equal(account.ompCredential.record, "managed marker (non-secret)");
-  assert.equal(account.ompCredential.authorizedAt, new Date(1234567890123).toISOString());
-  assert.equal(account.ompAuthSource, "local store (oauth marker)");
-  assert.equal(account.acpAuth.status, "missing");
-  assert.equal(account.acpAuth.usable, true, "Stubbed keychain presence must mark auth usable");
-  assert.equal(account.macOSKeychainEntry, true);
-  assert.equal(account.savedAcpSessions, 1);
-  assert.equal(account.runtime.permissionMode, "yolo");
+  const account = notices.pop();
+  assert.match(account, /Antigravity ACP account/);
+  assert.match(account, /Authentication: missing/);
+  assert.match(account, /Credential storage \(preflight\): server default \(expected: no refreshable token file to reuse\)/);
+  assert.match(account, /OMP marker record: present, authorized 2009-02-13T23:31:30.123Z \(non-secret managed marker\)/);
+  assert.match(account, /OMP auth source: local store \(oauth marker\)/);
+  assert.match(account, /Saved ACP sessions: 1/);
+  assert.match(account, /Requested permission mode: yolo/);
+  assert.match(account, /Active bindings: 0/);
   await assert.rejects(command.handler("account extra", context), /Usage:/);
 
   // login: upstream OAuth flow stubbed at loginGoogle; the command must map
@@ -90,6 +96,9 @@ try {
     manual.showAuthorizationUrl("https://accounts.google.com/o/oauth2/v2/auth?scope=test", "Open the authorization URL");
     loginSeen.pasted = await manual.promptForCallback();
   } as any;
+  // A stale token file must be cleared so the login cannot reuse the old account.
+  await fs.mkdir(path.join(geminiHome, "antigravity-acp"), { recursive: true });
+  await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "stale" }));
   await command.handler("login", context);
   assert.equal(inputs.length, 1);
   assert.equal(inputs[0].message, "Paste the final localhost callback URL (or authorization code):");
@@ -98,9 +107,14 @@ try {
   const loginNotice = notices.join("\n");
   assert.ok(loginNotice.includes("Stub login progress"));
   assert.ok(loginNotice.includes("https://accounts.google.com/o/oauth2/v2/auth?scope=test"));
-  assert.ok(loginNotice.includes("Antigravity Google login finished"), notices.join(" | "));
-  // prepareRuntime wrote the default auth choice into the isolated GEMINI_HOME.
-  assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8")).auth.type, "oauth-personal");
+  assert.ok(loginNotice.includes("fresh sign-in"), notices.join(" | "));
+  await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
+  assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8").catch(() => "{}")).auth, undefined);
+  assert.ok(keychainCalls.includes("remove"), "Login must clear stored credentials for a fresh sign-in");
+  // login must refuse while an Antigravity request is active.
+  SessionRuntimePool.prototype.values = function () { return [{ isBusy: () => true }]; } as any;
+  await assert.rejects(command.handler("login", context), /Wait for active Antigravity requests/);
+  SessionRuntimePool.prototype.values = originalPoolValues;
   await assert.rejects(command.handler("login extra", context), /Usage:/);
 
   // logout with active work must refuse rather than tear down live sessions.
@@ -113,27 +127,25 @@ try {
   await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "secret-ref" }));
   await command.handler("logout", context);
   const logoutNotice = notices.pop();
-  assert.match(logoutNotice, /Antigravity ACP logout/);
-  assert.match(logoutNotice, /ACP auth after logout: missing/);
-  assert.match(logoutNotice, /macOS keychain entry: removed/);
-  assert.match(logoutNotice, /OMP marker record: removed/);
+  assert.match(logoutNotice, /Antigravity ACP: logged out — Google credentials, saved ACP sessions, the macOS keychain entry and the OMP marker record cleared/);
   assert.equal(refreshCalls, 1, "Logout must refresh the provider after removing the marker");
-  assert.ok(keychainCalls.includes("remove"));
   await assert.rejects(fs.access(path.join(stateDir, "sessions.json")));
   await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
-  assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8")).auth, undefined);
+  assert.equal(JSON.parse(await fs.readFile(path.join(geminiHome, "antigravity-acp", "settings.json"), "utf8").catch(() => "{}")).auth, undefined);
   assert.equal(ompCredentials.size, 0);
   // The next request must build a fresh runtime pool entry, not the closed one.
   await command.handler("account", context);
-  const afterLogout = JSON.parse(notices.pop());
-  assert.equal(afterLogout.acpAuth.status, "missing");
-  assert.equal(afterLogout.savedAcpSessions, 0);
+  const afterLogout = notices.pop();
+  assert.match(afterLogout, /Authentication: missing/);
+  assert.match(afterLogout, /OMP marker record: not stored; run \/login or \/antigravity-acp login/);
+  assert.match(afterLogout, /Saved ACP sessions: 0/);
   await assert.rejects(command.handler("logout extra", context), /Usage:/);
 
   // logout without a model registry reports the manual /logout fallback.
   await command.handler("logout", baseContext);
   const fallbackNotice = notices.pop();
-  assert.match(fallbackNotice, /OMP marker record: could not be removed; run \/logout/);
+  assert.match(fallbackNotice, /logged out — Google credentials, saved ACP sessions and the macOS keychain entry cleared\. The OMP marker record could not be removed; run \/logout to drop it\./);
+
   const credentialStore = context.modelRegistry.authStorage.credentials;
   const followNotices = () => notices.filter(n => n.includes("finished the logout OMP started"));
   const settle = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms));
@@ -147,15 +159,19 @@ try {
   assert.equal(followNotices().length, 0, "Manual logout must not trigger the followed logout");
 
   // OMP /logout removing the marker finishes the Antigravity-side logout.
+  // The keychain stub simulates a dying server flushing its token back once;
+  // the durable removal must retry past it.
   await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "secret-ref" }));
   await fs.writeFile(path.join(stateDir, "sessions.json"), JSON.stringify([sessionRecord], null, 2));
+  keychainEntry = true;
+  flushOnce = true;
   storeMarker();
   await credentialStore.remove("antigravity-acp");
-  await settle();
+  await settle(1500);
   const followed = followNotices();
   assert.equal(followed.length, 1, "OMP-side marker removal must trigger the followed logout");
-  assert.match(followed[0], /ACP auth after logout: missing/);
-  assert.match(followed[0], /macOS keychain entry: removed/);
+  assert.match(followed[0], /Antigravity ACP: finished the logout OMP started — Google credentials, saved ACP sessions and the macOS keychain entry cleared/);
+  assert.equal(keychainEntry, false, "The flushed-back keychain entry must be removed again");
   await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
   await assert.rejects(fs.access(path.join(stateDir, "sessions.json")));
 

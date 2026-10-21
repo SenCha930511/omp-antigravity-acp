@@ -12,7 +12,7 @@ import { EFFORTS, projectCatalog, readModels, selectRuntimeModel } from "./model
 import { advertisedRecord, choices, selector } from "./selectors.ts";
 import { TOOL_ROUTING, parseNativeToolMode } from "./tool-routing.ts";
 import { loadNativeToolMode, loadToolPolicy, saveNativeToolMode, saveDebugToolUpdates } from "./tool-policy.ts";
-import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter, SessionCleanup } from "./runtime.mjs";
+import { Type, createAntigravityProvider, AntigravityRuntime, PERMISSION_TOOL_NAME, PERMISSION_RESULT_KIND, loadConfig, savePermissionMode, inspectAntigravityAuth, hasAntigravityAuth, clearAntigravityCredentials, describeCredentialStorage, AcpSessionStore, ensureAntigravityAcpReady, TierConnection, planToolProjection, PiEventWriter, SessionCleanup } from "./runtime.mjs";
 
 const MARKER = "pi-antigravity-acp:managed-by-antigravity";
 
@@ -54,7 +54,7 @@ function ompCredentialSummary(ctx: any) {
     if (!stored) return { present: false };
     return {
       present: true,
-      record: stored.refresh === MARKER ? "managed marker (non-secret)" : "oauth",
+      record: stored.refresh === MARKER ? "non-secret managed marker" : "oauth credential",
       authorizedAt: typeof stored.authorizedAt === "number" ? new Date(stored.authorizedAt).toISOString() : undefined,
     };
   } catch (error: any) {
@@ -139,6 +139,33 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       return Boolean(ctx?.modelRegistry?.authStorage?.credentials?.getOAuth?.("antigravity-acp"));
     } catch { return undefined; }
   }
+  // A dying ACP server can flush its in-memory token back to the keychain,
+  // racing a plain deletion and restoring the previous account. Wait for this
+  // adapter's server processes to fully exit first, then verify the removal.
+  async function removeKeychainCredentialDurably(): Promise<boolean | undefined> {
+    const pending = [...connections].map(connection => connection.process.exited.catch(() => undefined));
+    if (pending.length > 0) {
+      await Promise.race([Promise.allSettled(pending), new Promise(resolve => setTimeout(resolve, 10_000))]);
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (keychain.present() === false) return true;
+      const removed = keychain.remove();
+      if (removed !== true) return removed;
+      await new Promise(resolve => setTimeout(resolve, 400));
+    }
+    return keychain.present() === false;
+  }
+  // /login must mean a fresh Google sign-in: drop stored credentials (and this
+  // process's old-account servers) so a new server cannot silently reuse the
+  // saved login and keep the previous account.
+  async function beginFreshGoogleLogin() {
+    if (runtimes.values().some(bundle => bundle.isBusy())) {
+      throw new Error("Wait for active Antigravity requests to finish before logging in.");
+    }
+    await runtimes.closeAll();
+    clearAntigravityCredentials();
+    keychain.remove();
+  }
   async function finishFollowedLogout(ctx: any) {
     if (runtimes.values().some(bundle => bundle.isBusy())) {
       // Never interrupt an in-flight Antigravity request; retry once idle.
@@ -153,16 +180,13 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
     runtimes.get();
     await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
     await runtimes.closeAll();
-    const keychainRemoved = keychain.remove();
-    const after = inspectAntigravityAuth();
+    const keychainRemoved = await removeKeychainCredentialDurably();
+    // Keep the confirmation terse; /antigravity-acp account shows the details.
+    const cleared = ["Google credentials", "saved ACP sessions"];
+    if (keychainRemoved === true) cleared.push("the macOS keychain entry");
+    const list = cleared.slice(0, -1).join(", ") + " and " + cleared[cleared.length - 1];
     try {
-      ctx?.ui?.notify?.([
-        "Antigravity ACP: finished the logout OMP started.",
-        `ACP auth after logout: ${after.status}${after.authType ? ` (${after.authType})` : ""}`,
-        `macOS keychain entry: ${keychainRemoved === undefined ? "not applicable (non-macOS)" : keychainRemoved ? "removed" : "not present or not removable"}`,
-        "Saved ACP sessions: cleared",
-        "Run /antigravity-acp login or OMP /login to sign in again.",
-      ].join("\n"), "info");
+      ctx?.ui?.notify?.(`Antigravity ACP: finished the logout OMP started — ${list} cleared.${keychainRemoved === false ? " The macOS keychain entry was not present or not removable." : ""}`, "info");
     } catch { /* the host UI may already be gone */ }
   }
   function watchOmpCredentials(ctx: any) {
@@ -278,6 +302,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       if (command === "login") {
         if (value) throw new Error("Usage: /antigravity-acp login");
         await prepareRuntime();
+        await beginFreshGoogleLogin();
         // Direct Antigravity Google login through the command UI. OMP's /login
         // runs the same flow and additionally stores the provider marker.
         await runtimes.get().provider.auth.oauth.login({
@@ -294,7 +319,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           },
         });
         const auth = inspectAntigravityAuth();
-        ctx.ui.notify(`Antigravity Google login finished. ACP auth: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}.\nRun /antigravity-acp account to inspect the stored state, or OMP /login to also record the provider marker in OMP's account list.`, "info");
+        ctx.ui.notify(`Antigravity Google login finished — fresh sign-in; ACP auth: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}.`, "info");
         return;
       }
       if (command === "logout") {
@@ -308,20 +333,17 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         // removes the local token file plus the settings auth choice.
         await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
         await runtimes.closeAll();
-        const keychainRemoved = keychain.remove();
+        const keychainRemoved = await removeKeychainCredentialDurably();
         // Removing the marker ourselves must not trigger the follow-up logout.
         selfLogout = true;
         let ompMarker: "removed" | "absent" | "unavailable";
         try { ompMarker = await removeOmpCredentialRecord(ctx); } finally { selfLogout = false; }
-        const after = inspectAntigravityAuth();
-        ctx.ui.notify([
-          "Antigravity ACP logout",
-          `ACP auth after logout: ${after.status}${after.authType ? ` (${after.authType})` : ""}`,
-          `macOS keychain entry: ${keychainRemoved === undefined ? "not applicable (non-macOS)" : keychainRemoved ? "removed" : "not present or not removable"}`,
-          "Saved ACP sessions: cleared",
-          `OMP marker record: ${ompMarker === "removed" ? "removed" : ompMarker === "absent" ? "was not stored" : "could not be removed; run /logout to drop it"}`,
-          "Run /antigravity-acp login or OMP /login to sign in again.",
-        ].join("\n"), "info");
+        // Keep the confirmation terse; /antigravity-acp account shows the details.
+        const cleared = ["Google credentials", "saved ACP sessions"];
+        if (keychainRemoved === true) cleared.push("the macOS keychain entry");
+        if (ompMarker === "removed") cleared.push("the OMP marker record");
+        const list = cleared.slice(0, -1).join(", ") + " and " + cleared[cleared.length - 1];
+        ctx.ui.notify(`Antigravity ACP: logged out — ${list} cleared.${ompMarker === "unavailable" ? " The OMP marker record could not be removed; run /logout to drop it." : ""}${keychainRemoved === false ? " The macOS keychain entry was not present or not removable." : ""}`, "info");
         return;
       }
       if (command === "account") {
@@ -329,17 +351,25 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         const auth = inspectAntigravityAuth();
         let ompSource: string | undefined;
         try { ompSource = ctx?.modelRegistry?.authStorage?.keys?.describe?.("antigravity-acp", sessionIdOf(ctx)); } catch { /* host version dependent */ }
-        const snapshot = await runtimes.get(sessionIdOf(ctx)).runtime.snapshot();
-        ctx.ui.notify(JSON.stringify({
-          provider: "antigravity-acp",
-          ompCredential: ompCredentialSummary(ctx),
-          ompAuthSource: ompSource,
-          acpAuth: { status: auth.status, authType: auth.authType, tokenFile: auth.tokenFile, settingsFile: auth.settingsFile, usable: authReady() },
-          macOSKeychainEntry: keychain.present(),
-          savedAcpSessions: runtimes.get(sessionIdOf(ctx)).runtime.sessionStore?.read().length ?? 0,
-          runtime: { permissionMode: snapshot.permissionMode, activeSessions: snapshot.bindings },
-          note: "Google OAuth tokens stay in Antigravity-owned storage (~/.gemini/antigravity-acp or the macOS keychain). OMP stores only a non-secret marker. /antigravity-acp logout clears both sides in one command; OMP /logout also triggers the Antigravity-side cleanup automatically (set OMP_ACP_FOLLOW_LOGOUT=0 to disable).",
-        }, null, 2), "info");
+        const runtime = runtimes.get(sessionIdOf(ctx)).runtime;
+        const snapshot = await runtime.snapshot();
+        const omp = ompCredentialSummary(ctx);
+        const marker = omp.present === undefined ? "unknown (host did not expose the credential store)"
+          : omp.present ? `present, authorized ${omp.authorizedAt ?? "unknown time"} (${omp.record})`
+          : "not stored; run /login or /antigravity-acp login";
+        // Mirrors the upstream provider's status/doctor wording for the shared
+        // fields, with OMP-specific lines in the same style.
+        ctx.ui.notify([
+          "Antigravity ACP account",
+          `Authentication: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}`,
+          `Credential storage (preflight): ${describeCredentialStorage()}`,
+          `OMP marker record: ${marker}`,
+          ompSource ? `OMP auth source: ${ompSource}` : undefined,
+          `Saved ACP sessions: ${runtime.sessionStore?.read().length ?? 0}`,
+          `Requested permission mode: ${snapshot.permissionMode === "auto_edit" ? "auto-edit" : snapshot.permissionMode}`,
+          `Active bindings: ${snapshot.bindings}`,
+          "Google OAuth tokens stay in Antigravity-owned storage; OMP stores only a non-secret marker. /antigravity-acp logout clears both sides; OMP /logout also finishes the Antigravity-side cleanup.",
+        ].filter(Boolean).join("\n"), "info");
         return;
       }
       const { runtime } = runtimes.get(sessionIdOf(ctx));
@@ -505,6 +535,9 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           name: "Google Antigravity (ACP)",
           async login(callbacks: any) {
             await prepareRuntime();
+            // Always offer a fresh Google sign-in; without this a new server
+            // process silently reuses the saved login and keeps the old account.
+            await beginFreshGoogleLogin();
             return runtimes.get().provider.auth.oauth.login({
               signal: callbacks.signal,
               notify(event: any) {

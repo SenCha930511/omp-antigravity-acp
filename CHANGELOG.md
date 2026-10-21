@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 0.1.12 — 2026-10-21
+
+- Always start a fresh Google sign-in for OMP `/login` and `/antigravity-acp login`: stored credentials and this process's old-account servers are dropped first, so a new server process cannot silently reuse the saved login and keep the previous account.
+- Remove the macOS keychain entry durably at logout: wait for this adapter's ACP server processes to fully exit, then verify the deletion, retrying when a dying server flushes its token back.
+- Report logout results in one line; `/antigravity-acp account` keeps the details.
+- Display `/antigravity-acp account` in the upstream provider's status wording (Authentication, credential-storage preflight, permission mode, active bindings) plus OMP-specific marker lines, replacing the JSON dump.
+
 ## 0.1.11 — 2026-10-21
 
 - Follow OMP's `/logout`: when the stored marker record is removed, automatically finish the Antigravity-side logout (close this process's ACP runtimes, clear saved sessions, delete the local token file and settings auth choice, remove the macOS keychain entry) and confirm with a notification.
