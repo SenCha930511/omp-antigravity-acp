@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { registerOmpAdapter, keychain } from "../extension/index.ts";
+import { registerOmpAdapter, keychain, logoutFollow } from "../extension/index.ts";
 import { AntigravityRuntime } from "../extension/runtime.mjs";
 import { SessionRuntimePool } from "../extension/runtime-pool.ts";
 
@@ -20,6 +20,10 @@ const originalPresent = keychain.present;
 const originalRemove = keychain.remove;
 const originalLoginGoogle = AntigravityRuntime.prototype.loginGoogle;
 const originalPoolValues = SessionRuntimePool.prototype.values;
+const originalDelayMs = logoutFollow.delayMs;
+const originalRetryMs = logoutFollow.retryMs;
+logoutFollow.delayMs = 10;
+logoutFollow.retryMs = 20;
 const keychainCalls: string[] = [];
 const hooks = new Map<string, Function>();
 let command: any;
@@ -42,10 +46,15 @@ try {
   };
   const context = { ...baseContext, modelRegistry: {
     authStorage: {
-      credentials: {
-        getOAuth: (provider: string) => ompCredentials.get(provider),
-        remove: async (provider: string) => { ompCredentials.delete(provider); },
-      },
+      credentials: (() => {
+        const generationListeners: (() => void)[] = [];
+        return {
+          getOAuth: (provider: string) => ompCredentials.get(provider),
+          remove: async (provider: string) => { ompCredentials.delete(provider); for (const listener of generationListeners) listener(); },
+          onGeneration: (listener: () => void) => { generationListeners.push(listener); return () => {}; },
+          generationListeners,
+        };
+      })(),
       keys: { describe: () => "local store (oauth marker)" },
     },
     refreshProvider: async () => { refreshCalls++; },
@@ -125,13 +134,73 @@ try {
   await command.handler("logout", baseContext);
   const fallbackNotice = notices.pop();
   assert.match(fallbackNotice, /OMP marker record: could not be removed; run \/logout/);
-  assert.match(fallbackNotice, /macOS keychain entry: removed/);
-  console.log("Account view, login dialog mapping, logout isolation and busy guard: PASS");
+  const credentialStore = context.modelRegistry.authStorage.credentials;
+  const followNotices = () => notices.filter(n => n.includes("finished the logout OMP started"));
+  const settle = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms));
+  const storeMarker = () => {
+    ompCredentials.set("antigravity-acp", { type: "oauth", refresh: MARKER, access: MARKER, expires: Number.MAX_SAFE_INTEGER, authorizedAt: Date.now() });
+    for (const listener of credentialStore.generationListeners) listener();
+  };
+
+  // The manual command removed the marker itself; the follow-up must stay silent.
+  await settle();
+  assert.equal(followNotices().length, 0, "Manual logout must not trigger the followed logout");
+
+  // OMP /logout removing the marker finishes the Antigravity-side logout.
+  await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "secret-ref" }));
+  await fs.writeFile(path.join(stateDir, "sessions.json"), JSON.stringify([sessionRecord], null, 2));
+  storeMarker();
+  await credentialStore.remove("antigravity-acp");
+  await settle();
+  const followed = followNotices();
+  assert.equal(followed.length, 1, "OMP-side marker removal must trigger the followed logout");
+  assert.match(followed[0], /ACP auth after logout: missing/);
+  assert.match(followed[0], /macOS keychain entry: removed/);
+  await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
+  await assert.rejects(fs.access(path.join(stateDir, "sessions.json")));
+
+  // Automatic soft-disables (credential_disabled) must not destroy the login.
+  storeMarker();
+  await fs.writeFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"), JSON.stringify({ refresh_token: "secret-ref" }));
+  const removePromise = credentialStore.remove("antigravity-acp");
+  hooks.get("credential_disabled")?.({ type: "credential_disabled", provider: "antigravity-acp", disabledCause: "oauth refresh failed" });
+  await removePromise;
+  await settle();
+  assert.equal(followNotices().length, 1, "Automatic credential disables must not trigger the followed logout");
+
+  // A quick re-login after removal cancels the cleanup.
+  storeMarker();
+  const quickRelogin = credentialStore.remove("antigravity-acp");
+  storeMarker();
+  await quickRelogin;
+  await settle();
+  assert.equal(followNotices().length, 1, "A quick re-login must cancel the followed logout");
+
+  // OMP_ACP_FOLLOW_LOGOUT=0 keeps OMP /logout marker-only.
+  process.env.OMP_ACP_FOLLOW_LOGOUT = "0";
+  storeMarker();
+  await credentialStore.remove("antigravity-acp");
+  await settle();
+  assert.equal(followNotices().length, 1, "The follow behavior must respect OMP_ACP_FOLLOW_LOGOUT=0");
+  delete process.env.OMP_ACP_FOLLOW_LOGOUT;
+
+  // Active requests defer the followed logout until the pool is idle again.
+  storeMarker();
+  SessionRuntimePool.prototype.values = function () { return [{ isBusy: () => true }]; } as any;
+  await credentialStore.remove("antigravity-acp");
+  await settle();
+  assert.equal(followNotices().length, 1, "A busy pool must defer the followed logout");
+  SessionRuntimePool.prototype.values = originalPoolValues;
+  await settle(120);
+  assert.equal(followNotices().length, 2, "The deferred followed logout must run once the pool is idle");
+  console.log("Account view, login dialog mapping, logout isolation, busy guard and OMP-logout following: PASS");
 } finally {
   keychain.present = originalPresent;
   keychain.remove = originalRemove;
   AntigravityRuntime.prototype.loginGoogle = originalLoginGoogle;
   SessionRuntimePool.prototype.values = originalPoolValues;
+  logoutFollow.delayMs = originalDelayMs;
+  logoutFollow.retryMs = originalRetryMs;
   await hooks.get("session_shutdown")?.({}, {});
   await fs.rm(stateDir, { recursive: true, force: true });
   await fs.rm(geminiHome, { recursive: true, force: true });

@@ -38,6 +38,10 @@ export const keychain = {
   },
 };
 
+// Timing knobs for following OMP-side logouts; mutable so offline tests can
+// run the delayed detection without real waits.
+export const logoutFollow = { delayMs: 500, retryMs: 15_000 };
+
 function authReady() {
   return hasAntigravityAuth() || keychain.present() === true;
 }
@@ -121,6 +125,80 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       await runtimes.closeAll();
     }
   });
+  // OMP's oauth contract has no logout hook: /logout only removes the stored
+  // marker credential. Watching the credential store's generation counter lets
+  // this adapter finish the Antigravity-side logout when OMP reports removal.
+  let watchingCredentials = false;
+  let markerPresent: boolean | undefined;
+  let suppressFollow = false;
+  let selfLogout = false;
+  let followTimer: ReturnType<typeof setTimeout> | undefined;
+  let followRetry: ReturnType<typeof setTimeout> | undefined;
+  function ompMarkerStored(ctx: any): boolean | undefined {
+    try {
+      return Boolean(ctx?.modelRegistry?.authStorage?.credentials?.getOAuth?.("antigravity-acp"));
+    } catch { return undefined; }
+  }
+  async function finishFollowedLogout(ctx: any) {
+    if (runtimes.values().some(bundle => bundle.isBusy())) {
+      // Never interrupt an in-flight Antigravity request; retry once idle.
+      clearTimeout(followRetry);
+      followRetry = setTimeout(() => {
+        followRetry = undefined;
+        if (ompMarkerStored(ctx) === false) void finishFollowedLogout(ctx);
+      }, logoutFollow.retryMs);
+      followRetry.unref?.();
+      return;
+    }
+    runtimes.get();
+    await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
+    await runtimes.closeAll();
+    const keychainRemoved = keychain.remove();
+    const after = inspectAntigravityAuth();
+    try {
+      ctx?.ui?.notify?.([
+        "Antigravity ACP: finished the logout OMP started.",
+        `ACP auth after logout: ${after.status}${after.authType ? ` (${after.authType})` : ""}`,
+        `macOS keychain entry: ${keychainRemoved === undefined ? "not applicable (non-macOS)" : keychainRemoved ? "removed" : "not present or not removable"}`,
+        "Saved ACP sessions: cleared",
+        "Run /antigravity-acp login or OMP /login to sign in again.",
+      ].join("\n"), "info");
+    } catch { /* the host UI may already be gone */ }
+  }
+  function watchOmpCredentials(ctx: any) {
+    if (watchingCredentials) return;
+    const credentials = ctx?.modelRegistry?.authStorage?.credentials;
+    if (!credentials?.getOAuth || !credentials.onGeneration) return;
+    const initial = ompMarkerStored(ctx);
+    if (initial === undefined) return;
+    watchingCredentials = true;
+    markerPresent = initial;
+    // Automatic soft-disables (for example an invalid_grant refresh) must not
+    // destroy the Antigravity-side login. OMP emits credential_disabled for
+    // those, but not for user-initiated removals such as /logout.
+    pi.on("credential_disabled", (event: any) => {
+      if (event?.provider === "antigravity-acp") suppressFollow = true;
+    });
+    credentials.onGeneration(() => {
+      const current = ompMarkerStored(ctx);
+      if (current === undefined) return;
+      const wasPresent = markerPresent === true;
+      markerPresent = current;
+      if (current) suppressFollow = false;
+      if (!wasPresent || current || selfLogout) return;
+      clearTimeout(followTimer);
+      followTimer = setTimeout(() => {
+        followTimer = undefined;
+        if (process.env.OMP_ACP_FOLLOW_LOGOUT === "0") return;
+        if (suppressFollow) { suppressFollow = false; return; }
+        // A quick re-login after the removal cancels the cleanup.
+        if (ompMarkerStored(ctx) !== false) return;
+        void finishFollowedLogout(ctx);
+      }, logoutFollow.delayMs);
+      followTimer.unref?.();
+    });
+  }
+  pi.on("session_start", async (_event: any, ctx: any) => { watchOmpCredentials(ctx); });
   pi.registerTool({
     name: PERMISSION_TOOL_NAME,
     label: "Antigravity ACP Permission",
@@ -141,6 +219,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   pi.registerCommand("antigravity-acp", {
     description: "Inspect ACP status/account/tools/usage/context/cleanup, manage Antigravity login/logout, configure budgets, toggle debug, refresh models or set tool policies",
     async handler(args: string, ctx: any) {
+      watchOmpCredentials(ctx);
       const parts = args.trim().split(/\s+/);
       const [command, value] = parts;
       if (command === "cleanup") {
@@ -230,7 +309,10 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         await Promise.all(runtimes.values().map(bundle => bundle.runtime.logout()));
         await runtimes.closeAll();
         const keychainRemoved = keychain.remove();
-        const ompMarker = await removeOmpCredentialRecord(ctx);
+        // Removing the marker ourselves must not trigger the follow-up logout.
+        selfLogout = true;
+        let ompMarker: "removed" | "absent" | "unavailable";
+        try { ompMarker = await removeOmpCredentialRecord(ctx); } finally { selfLogout = false; }
         const after = inspectAntigravityAuth();
         ctx.ui.notify([
           "Antigravity ACP logout",
@@ -256,7 +338,7 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
           macOSKeychainEntry: keychain.present(),
           savedAcpSessions: runtimes.get(sessionIdOf(ctx)).runtime.sessionStore?.read().length ?? 0,
           runtime: { permissionMode: snapshot.permissionMode, activeSessions: snapshot.bindings },
-          note: "Google OAuth tokens stay in Antigravity-owned storage (~/.gemini/antigravity-acp or the macOS keychain). OMP stores only a non-secret marker. /antigravity-acp logout clears both sides; OMP /logout removes only the marker.",
+          note: "Google OAuth tokens stay in Antigravity-owned storage (~/.gemini/antigravity-acp or the macOS keychain). OMP stores only a non-secret marker. /antigravity-acp logout clears both sides in one command; OMP /logout also triggers the Antigravity-side cleanup automatically (set OMP_ACP_FOLLOW_LOGOUT=0 to disable).",
         }, null, 2), "info");
         return;
       }

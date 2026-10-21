@@ -1,6 +1,13 @@
 # Changelog
 
 
+## 0.1.11 — 2026-10-21
+
+- Follow OMP's `/logout`: when the stored marker record is removed, automatically finish the Antigravity-side logout (close this process's ACP runtimes, clear saved sessions, delete the local token file and settings auth choice, remove the macOS keychain entry) and confirm with a notification.
+- Never trigger that cleanup for automatic credential soft-disables, self-removal by `/antigravity-acp logout`, or a quick re-login after removal; defer it while Antigravity requests are active.
+- Add `OMP_ACP_FOLLOW_LOGOUT=0` to keep OMP's `/logout` limited to removing the marker record.
+- Extend the offline auth-command suite with credential-store watch scenarios.
+
 ## 0.1.10 — 2026-10-21
 
 - Add `/antigravity-acp account` to inspect authentication state on both the OMP and Antigravity sides, including the macOS keychain entry and saved ACP session count.
