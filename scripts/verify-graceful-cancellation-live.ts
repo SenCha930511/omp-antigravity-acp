@@ -1,4 +1,4 @@
-// Opt-in: four Flash Low inference calls through the actual OMP adapter.
+// Opt-in: four Flash Low calls, or two with --text-only, through the adapter.
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -13,12 +13,24 @@ await fs.copyFile(path.join(sourceState, "models-cache.json"), path.join(state, 
 const hooks = new Map<string, Function>();
 let provider: any;
 const seen = new Map<any, Set<string>>();
-const calls: Array<{ id: string; prompt: any[]; stop?: string }> = [];
+const calls: Array<{ id: string; prompt: any[]; stop?: string; started: number; aborted?: number; terminal?: number; cancels: number }> = [];
 const original = TierConnection.prototype.prompt;
+const originalCancel = TierConnection.prototype.cancel;
+const cancelDescriptor = Object.getOwnPropertyDescriptor(TierConnection.prototype, "cancel");
+TierConnection.prototype.cancel = async function(id: string) {
+  const row = calls.findLast(row => row.id === id && row.terminal === undefined);
+  if (row) row.cancels++;
+  return originalCancel.call(this, id);
+};
 TierConnection.prototype.prompt = async function(request: any, signal: any) {
   const ids = seen.get(this) ?? new Set<string>(); ids.add(request.sessionId); seen.set(this, ids);
-  const row = { id: request.sessionId, prompt: request.prompt, stop: undefined as string | undefined }; calls.push(row);
-  const response = await original.call(this, request, signal); row.stop = response.stopReason; return response;
+  const row: typeof calls[number] = { id: request.sessionId, prompt: request.prompt, started: performance.now(), cancels: 0 }; calls.push(row);
+  const abort = () => { row.aborted ??= performance.now(); };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const response = await original.call(this, request, signal);
+    row.terminal = performance.now(); row.stop = response.stopReason; return response;
+  } finally { signal?.removeEventListener("abort", abort); }
 };
 try {
   // Test-only policy; leave the user's saved files untouched.
@@ -27,7 +39,7 @@ try {
   await registerOmpAdapter({ on: (name: string, fn: Function) => hooks.set(name, fn),
     registerProvider: (_name: string, p: any) => { provider = p; }, registerTool() {}, registerCommand() {} }, state);
   const model = provider.models.find((m: any) => m.id === "gemini-3.8-flash"); assert.ok(model);
-  for (const mode of ["text", "tools"]) {
+  for (const mode of process.argv.includes("--text-only") ? ["text"] : ["text", "tools"]) {
     const id = `cancel-live-${mode}-${randomUUID()}`;
     const controller = new AbortController();
     const tools = mode === "tools" ? [{ name: "probe_read", description: "Return canned synthetic data only; no filesystem access.", parameters: Type.Object({ key: Type.String() }) }] : [];
@@ -40,10 +52,14 @@ try {
       if ((mode === "text" && event.type === "text_delta") || (mode === "tools" && event.type === "toolcall_end")) controller.abort();
       if (event.type === "error") interrupted = structuredClone(event.error);
     }
-    assert.ok(controller.signal.aborted && interrupted, `${mode} must be genuinely interrupted`);
+    const interruptedDelivered = performance.now();
+    assert.ok(controller.signal.aborted && interrupted,
+      `${mode} did not reach a cancellable output chunk; elapsed=${Math.round(interruptedDelivered - (calls[first]?.started ?? interruptedDelivered))}ms; ` +
+      `terminal=${calls[first]?.stop ?? "none"}; error=${String(interrupted?.errorMessage ?? "none").replace(/https?:\/\/\S+/g, "[URL]").slice(0, 160)}`);
     assert.equal(calls[first].stop, "cancelled", "Official terminal acknowledgement must survive the client wrapper");
     messages.push(interrupted, { role: "user", timestamp: Date.now(), content: "The previous request is cancelled. New request: reply with exactly NEW_REQUEST_OK. Do not use tools or resume the previous request." });
     let answer: any;
+    const followupSubmitted = performance.now();
     for await (const event of provider.streamSimple(model, { messages, tools }, { sessionId: id, reasoning: "low", signal: AbortSignal.timeout(90_000) })) {
       if (event.type === "error") throw new Error(event.error.errorMessage);
       if (event.type === "done") answer = event.message;
@@ -51,11 +67,18 @@ try {
     assert.equal(answer?.content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("").trim(), "NEW_REQUEST_OK");
     assert.equal(calls[first + 1].id, calls[first].id, "Actual OMP adapter must preserve the ACP session after a clean cancellation");
     assert.ok(!calls[first + 1].prompt.some(b => b.type === "resource" && b.resource?.uri === "urn:omp:antigravity-acp:history"), "No cold history replay after confirmed cancellation");
-    console.log(JSON.stringify({ mode, officialStop: calls[first].stop, sameSession: true, coldHistoryReplay: false, answer: "NEW_REQUEST_OK" }));
+    const round = (ms: number) => +ms.toFixed(3);
+    console.log(JSON.stringify({ mode, officialStop: calls[first].stop, sameSession: true, coldHistoryReplay: false, answer: "NEW_REQUEST_OK",
+      cancelNotifications: calls[first].cancels, cancelToTerminalMs: round(calls[first].terminal! - calls[first].aborted!),
+      terminalToInterruptedDeliveryMs: round(interruptedDelivered - calls[first].terminal!),
+      followupLocalDispatchMs: round(calls[first + 1].started - followupSubmitted),
+      followupTotalMs: round(performance.now() - followupSubmitted) }));
     await hooks.get("session_shutdown")?.({}, { sessionManager: { getSessionId: () => id } });
   }
 } finally {
   for (const [c, ids] of seen) { for (const id of ids) c.discardSession(id); await c.close(); c.cleanup?.stop(); }
   TierConnection.prototype.prompt = original;
+  if (cancelDescriptor) Object.defineProperty(TierConnection.prototype, "cancel", cancelDescriptor);
+  else delete (TierConnection.prototype as any).cancel;
   await fs.rm(state, { recursive: true, force: true });
 }
