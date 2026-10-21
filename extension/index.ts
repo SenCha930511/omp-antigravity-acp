@@ -161,8 +161,17 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
   let markerPresent: boolean | undefined;
   let suppressFollow = false;
   let selfLogout = false;
+  // Whether registerProvider keeps the non-secret config apiKey fallback.
+  let apiKeyFallback = true;
   let followTimer: ReturnType<typeof setTimeout> | undefined;
   let followRetry: ReturnType<typeof setTimeout> | undefined;
+  function syncProviderRegistration() {
+    // Re-registering without an apiKey does not clear OMP's stored key
+    // config; unregister first so a logout report finds no remaining
+    // "provider config (fallback)" source.
+    try { pi.unregisterProvider?.("antigravity-acp"); } catch { /* older hosts */ }
+    try { adapted.registerProvider(); } catch { /* advisory */ }
+  }
   function ompMarkerStored(ctx: any): boolean | undefined {
     try {
       return Boolean(ctx?.modelRegistry?.authStorage?.credentials?.getOAuth?.("antigravity-acp"));
@@ -238,14 +247,31 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       const wasPresent = markerPresent === true;
       markerPresent = current;
       if (current) suppressFollow = false;
+      if (wasPresent !== current) {
+        // Flip the config apiKey in the same synchronous tick as the marker
+        // change: OMP's own logout report then finds no remaining
+        // "provider config (fallback)" source, while a fresh profile that
+        // never stored a marker keeps the catalog visible.
+        apiKeyFallback = current;
+        syncProviderRegistration();
+      }
       if (!wasPresent || current || selfLogout) return;
       clearTimeout(followTimer);
       followTimer = setTimeout(() => {
         followTimer = undefined;
         if (process.env.OMP_ACP_FOLLOW_LOGOUT === "0") return;
-        if (suppressFollow) { suppressFollow = false; return; }
+        if (suppressFollow) {
+          suppressFollow = false;
+          apiKeyFallback = true;
+          syncProviderRegistration();
+          return;
+        }
         // A quick re-login after the removal cancels the cleanup.
-        if (ompMarkerStored(ctx) !== false) return;
+        if (ompMarkerStored(ctx) !== false) {
+          apiKeyFallback = true;
+          syncProviderRegistration();
+          return;
+        }
         void finishFollowedLogout(ctx);
       }, logoutFollow.delayMs);
       followTimer.unref?.();
@@ -368,6 +394,11 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
         selfLogout = true;
         let ompMarker: "removed" | "absent" | "unavailable";
         try { ompMarker = await removeOmpCredentialRecord(ctx); } finally { selfLogout = false; }
+        if (ompMarker !== "unavailable") {
+          // Drop the config apiKey with the marker even without the watcher.
+          apiKeyFallback = false;
+          syncProviderRegistration();
+        }
         // Keep the confirmation terse; /antigravity-acp account shows the details.
         const cleared = ["Google credentials", "saved ACP sessions"];
         if (keychainRemoved === true) cleared.push("the macOS keychain entry");
@@ -506,8 +537,11 @@ export async function registerOmpAdapter(pi: any, stateDir: string) {
       return () => target.registerProvider("antigravity-acp", {
         api: "antigravity-acp",
         baseUrl: "acp://antigravity",
-        // This is a non-secret marker. Google tokens remain in ACP storage.
-        apiKey: MARKER,
+        // A config apiKey keeps OMP's own logout report claiming a remaining
+        // "provider config (fallback)" source, but dropping it entirely hides
+        // the catalog before the first /login. Register it only while an OMP
+        // marker is known to exist or before any logout was observed.
+        apiKey: apiKeyFallback ? MARKER : undefined,
         models: initialModels,
         async fetchDynamicModels() {
           // OMP may call this during startup, even for another provider.

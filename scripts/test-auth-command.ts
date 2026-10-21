@@ -40,11 +40,14 @@ try {
     if (flushOnce) { flushOnce = false; setTimeout(() => { keychainEntry = true; }, 100); }
     return true;
   };
+  const registrations: boolean[] = [];
   await registerOmpAdapter({
     on(name: string, handler: Function) { hooks.set(name, handler); },
-    registerProvider() {}, registerTool() {},
+    registerProvider(_name: string, config: any) { registrations.push(Boolean(config?.apiKey)); }, registerTool() {},
     registerCommand(_name: string, registered: any) { command = registered; },
   }, stateDir);
+  // A fresh profile keeps the non-secret config fallback so the catalog lists.
+  assert.deepEqual(registrations, [true]);
 
   const notices: string[] = [];
   const inputs: { message: string; placeholder?: string }[] = [];
@@ -140,6 +143,7 @@ try {
   await command.handler("logout", context);
   const logoutNotice = notices.pop();
   assert.match(logoutNotice, /Antigravity ACP: logged out — Google credentials, saved ACP sessions, the macOS keychain entry and the OMP marker record cleared/);
+  assert.equal(registrations[registrations.length - 1], false, "Logout must drop the config apiKey fallback");
   assert.equal(refreshCalls, 1, "Logout must refresh the provider after removing the marker");
   await assert.rejects(fs.access(path.join(stateDir, "sessions.json")));
   await assert.rejects(fs.access(path.join(geminiHome, "antigravity-acp", "acp_token.json")));
@@ -181,7 +185,9 @@ try {
   keychainEntry = true;
   flushOnce = true;
   storeMarker();
+  assert.equal(registrations[registrations.length - 1], true, "A stored marker restores the config apiKey fallback");
   await credentialStore.remove("antigravity-acp");
+  assert.equal(registrations[registrations.length - 1], false, "Marker removal must drop the fallback in the same tick");
   await settle(1500);
   const followed = followNotices();
   assert.equal(followed.length, 1, "OMP-side marker removal must trigger the followed logout");
@@ -204,6 +210,7 @@ try {
   const quickRelogin = credentialStore.remove("antigravity-acp");
   storeMarker();
   await quickRelogin;
+  assert.equal(registrations[registrations.length - 1], true, "A quick re-login restores the fallback");
   await settle();
   assert.equal(followNotices().length, 1, "A quick re-login must cancel the followed logout");
 

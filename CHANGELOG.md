@@ -1,6 +1,11 @@
 # Changelog
 
 
+## 0.1.14 — 2026-10-21
+
+- Stop OMP's `/logout` from reporting `antigravity-acp is still authenticated via provider config (fallback)`: when the marker credential is removed, the adapter synchronously unregisters and re-registers the provider without the non-secret config apiKey, so OMP finds no remaining auth source and the catalog correctly hides until the next `/login`.
+- Keep the config fallback for fresh profiles that never stored a marker, and restore it whenever a marker is stored again, so first-run model listing and `/login` continue to work as before.
+
 ## 0.1.13 — 2026-10-21
 
 - Show the signed-in Google account: `/antigravity-acp account` extracts the email claim from the ACP server's stored id_token (token file first, then the ACP keychain item), logins record it on OMP's marker credential so OMP's account list can label it, and login confirmations name the account.
