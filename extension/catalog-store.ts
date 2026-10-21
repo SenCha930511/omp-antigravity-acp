@@ -4,7 +4,7 @@ import { resolveContextOptions, type ContextOptions, type ContextSettings } from
 import { EFFORTS, projectCatalog, readModels, type AdvertisedModel, type PublicCatalogModel } from "./model-catalog.ts";
 import { officialApiCost } from "./pricing.ts";
 import { advertisedRecord, choices, selector } from "./selectors.ts";
-import { TierConnection } from "./tier-connection.ts";
+import { TierConnection } from "./runtime.mjs";
 import type { SessionCleanup } from "./session-cleanup.ts";
 
 export interface ConfiguredCatalogModel extends PublicCatalogModel {

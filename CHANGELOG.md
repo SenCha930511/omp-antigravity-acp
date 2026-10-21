@@ -1,6 +1,11 @@
 # Changelog
 
 
+## 0.1.16 — 2026-10-21
+
+- Fix the 0.1.15 marketplace regression where the adapter failed to load with `Cannot find package '@agentclientprotocol/sdk'`: the refactor had `catalog-store.ts` import `TierConnection` from the unbundled `tier-connection.ts` source, pulling the pinned upstream sources into OMP's launcher import path where OMP's extension loader cannot resolve bare package imports. `TierConnection` is imported from the prebuilt `extension/runtime.mjs` bundle again, keeping the load-time graph bundle-only.
+- Add a load-time graph test (`npm run test:graph`, part of `npm run check`) that fails if any module reachable from `extension/index.ts` bare-imports a package, so upstream-dependent sources can never re-enter the launcher path unnoticed.
+
 ## 0.1.15 — 2026-10-21
 
 - Internal hardening refactor with no behavior change: auth watching, logout following, catalog management, and command handling moved into focused modules (`auth-sync.ts`, `catalog-store.ts`, `commands.ts`), atomic JSON writes and file-error handling deduplicated into `fs-atomic.ts`, and `any` types replaced with explicit interfaces across the adapter.
